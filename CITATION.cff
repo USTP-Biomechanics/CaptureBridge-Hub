@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software in academic work, please cite it as below."
+title: "CaptureBridge Hub"
+authors:
+  - family-names: "Simonlehner"
+    given-names: "Mark"
+year: 2026
+license: MIT
+repository-code: "https://github.com/USTP-Biomechanics/CaptureBridge-Hub"
+abstract: "Windows desktop hub for synchronized mobile motion capture with live preview, file transfer, and Arduino/Vicon trigger support."
