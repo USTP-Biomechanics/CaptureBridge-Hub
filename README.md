@@ -1,0 +1,424 @@
+# CaptureBridge Hub
+
+CaptureBridge Hub is the Windows desktop control app for synchronized mobile
+motion capture sessions. It connects to compatible iOS and Android clients,
+keeps capture names and camera settings aligned, starts and stops all phones
+together, transfers recordings back to the PC, and can bridge trigger events to
+Arduino and Vicon lab workflows.
+
+Important network note: the PC and phones usually need to be on the same
+private Wi-Fi or LAN, Windows should use the Private network profile, and
+firewall exceptions are commonly required for TCP `6000`, UDP `6000`, and the
+phone streaming UDP port `6101`.
+
+## Quick Start
+
+Use the BAT files. That is the intended way to run the app.
+
+1. Put the PC and phones on the same private network.
+2. Double-click [Run_CaptureBridge_Hub.bat](Run_CaptureBridge_Hub.bat).
+3. If this is the first run, the launcher automatically calls
+   [Setup_CaptureBridge_Hub.bat](Setup_CaptureBridge_Hub.bat).
+4. Allow Windows firewall access on Private networks when prompted.
+5. Start the compatible iOS or Android phone clients.
+6. Confirm the phones appear in CaptureBridge Hub.
+7. Fill in the session naming fields.
+8. Confirm the shared camera profile is synced.
+9. Press `START`, then `STOP`.
+10. Transfer the current capture or all captures from the app.
+
+If setup reports that Python is missing, install Python 3 for Windows and run
+[Run_CaptureBridge_Hub.bat](Run_CaptureBridge_Hub.bat) again.
+
+## Network And Firewall
+
+CaptureBridge Hub listens on:
+
+- TCP `6000`: phone control, capture commands, file transfer, delete, and camera settings
+- UDP `6000`: phone discovery
+- UDP `6101`: raw phone live preview stream
+
+Phones should discover the PC automatically over UDP. If discovery or streaming
+does not work, check these first:
+
+- PC and phones are on the same Wi-Fi or LAN segment.
+- Windows network profile is set to Private.
+- Inbound firewall rules allow TCP `6000`, UDP `6000`, and UDP `6101`.
+- VPNs, guest Wi-Fi isolation, and strict corporate networks are not blocking local traffic.
+
+PowerShell firewall rules, run as Administrator:
+
+```powershell
+New-NetFirewallRule -DisplayName "CaptureBridge Hub UDP Discovery 6000" -Direction Inbound -Protocol UDP -LocalPort 6000 -Action Allow -Profile Private
+New-NetFirewallRule -DisplayName "CaptureBridge Hub TCP Control 6000" -Direction Inbound -Protocol TCP -LocalPort 6000 -Action Allow -Profile Private
+New-NetFirewallRule -DisplayName "CaptureBridge Hub Phone Stream UDP 6101" -Direction Inbound -Protocol UDP -LocalPort 6101 -Action Allow -Profile Private
+```
+
+Legacy `netsh` alternative:
+
+```cmd
+netsh advfirewall firewall add rule name="CaptureBridge Hub UDP Discovery 6000" dir=in action=allow protocol=UDP localport=6000 profile=private
+netsh advfirewall firewall add rule name="CaptureBridge Hub TCP Control 6000" dir=in action=allow protocol=TCP localport=6000 profile=private
+netsh advfirewall firewall add rule name="CaptureBridge Hub Phone Stream UDP 6101" dir=in action=allow protocol=UDP localport=6101 profile=private
+```
+
+## Running The App
+
+### Normal Repo Run
+
+Double-click:
+
+```text
+Run_CaptureBridge_Hub.bat
+```
+
+The launcher checks for `.venv`. If the environment is missing, it runs
+`Setup_CaptureBridge_Hub.bat`, creates the local virtual environment, installs
+[requirements.txt](requirements.txt), and starts the app.
+
+### Offline Portable Run
+
+For a lab PC that should not need Python or internet access:
+
+1. Extract `dist/CaptureBridge_Hub_Minimal_Offline.zip`.
+2. Double-click `Run_CaptureBridge_Hub.bat` inside the extracted folder.
+
+The offline package includes the app, portable CPython with Tkinter, `pyserial`,
+`Pillow`, and the [ArduinoBridge/](ArduinoBridge/) folder.
+
+## Repository Layout
+
+- [tcp_arduino_sync.py](tcp_arduino_sync.py): desktop app
+- [phone_stream.py](phone_stream.py): raw UDP phone preview receiver and Tk preview UI
+- [app_config.json](app_config.json): save path, naming fields, and stream settings
+- [requirements.txt](requirements.txt): Python dependencies for repo runs
+- [Run_CaptureBridge_Hub.bat](Run_CaptureBridge_Hub.bat): normal launcher
+- [Setup_CaptureBridge_Hub.bat](Setup_CaptureBridge_Hub.bat): normal setup helper
+- [ArduinoBridge/](ArduinoBridge/): Arduino sketch and Vicon monitor definition
+- [packaging/](packaging/): offline ZIP builder and files copied into the package
+
+## Main Features
+
+- Multi-phone control for compatible iOS and Android clients
+- UDP discovery plus TCP control on port `6000`
+- Shared live capture name with validation and automatic re-send until acknowledged
+- Global `START` and `STOP` broadcast
+- Shared camera settings for resolution, FPS, ISO, and shutter
+- Start is guarded until connected phones report the shared camera profile
+- Per-phone capture lists and transfer controls
+- Global transfer for the current capture or all captures
+- Unlock-guarded delete actions for one phone or all phones
+- Raw live preview grid with one checkbox per phone
+- Offline portable distribution build
+- Arduino serial bridge at `9600` baud
+- Vicon trigger workflows through the bundled Arduino bridge
+
+## Phone Live Preview
+
+The Phone Specific panel includes a `Streams` section with one checkbox per
+connected phone. Check one phone to open one preview, or check multiple phones
+to open a modular preview grid.
+
+The stream uses two channels:
+
+- TCP `6000` remains the control channel.
+- UDP `6101` carries chunked JPEG preview frames.
+
+The app sends `LIVE_PREVIEW_START` with the PC host, stream port, FPS, JPEG
+quality, and max dimension. The phone sends preview frames only after that
+request. Unchecking the phone or closing the app sends `LIVE_PREVIEW_STOP`.
+
+Stream settings live under `phone_stream` in [app_config.json](app_config.json):
+
+- `enabled`
+- `udp_port`
+- `max_fps`
+- `jpeg_quality`
+- `max_dimension`
+- `socket_buffer_bytes`
+
+## Operator Workflow
+
+1. Start CaptureBridge Hub with [Run_CaptureBridge_Hub.bat](Run_CaptureBridge_Hub.bat).
+2. Confirm all phones are connected in the left panel.
+3. Choose or confirm the transfer save path.
+4. Fill in the naming fields until the generated capture name is valid.
+5. Confirm the shared camera settings and wait for sync confirmation.
+6. Use Phone Specific preview checkboxes if you want live views.
+7. Press `START`.
+8. Press `STOP`.
+9. Transfer the current capture or all captures.
+10. Use delete controls only after unlocking the relevant delete section.
+
+## User Interface
+
+The app window is split into three working areas.
+
+Left:
+
+- live log
+- connected phone list
+- `START`, `STOP`, `ARM`, `QUIT`
+
+Middle:
+
+- transfer save path
+- transfer current capture on all phones
+- transfer all captures on all phones
+- delete current capture on all phones
+- delete all captures on all phones
+- generated capture name
+- configurable naming fields
+- global camera controls
+- camera sync summary
+
+Right:
+
+- phone picker
+- multi-phone stream checkboxes
+- live preview grid
+- per-phone capture list
+- transfer selected capture
+- transfer all captures from selected phone
+- delete selected capture
+- delete all captures from selected phone
+- transfer progress and per-phone status
+
+## Arduino Bridge
+
+Upload [ArduinoBridge.ino](ArduinoBridge/ArduinoBridge.ino) before using the
+hardware bridge. Close CaptureBridge Hub before uploading, because the app opens
+the Arduino serial port when it starts and the Arduino IDE cannot upload while
+that port is in use.
+
+The bundled sketch defaults to:
+
+- serial baud rate `9600`
+- digital output `D10`
+- analog input `A0`
+
+PC to Arduino:
+
+- `1`: set the output pin high
+- `0`: set the output pin low
+- `PING`: request the bridge identity for safe port detection
+
+Arduino to PC when `ARM` is enabled:
+
+- `START` or `1`
+- `STOP` or `0`
+
+The sketch converts `A0` threshold crossings into start and stop messages and
+debounces the signal. It replies to `PING` with
+`CAPTUREBRIDGE_ARDUINO_BRIDGE`, which lets the desktop app avoid opening random
+serial devices as if they were the bridge.
+
+Useful sketch constants:
+
+- `OUTPUT_PIN`
+- `START_THRESHOLD`
+- `STOP_THRESHOLD`
+- `SAMPLE_INTERVAL_MS`
+- `STATE_DEBOUNCE_MS`
+
+## Vicon Nexus Integration
+
+CaptureBridge can work with Vicon in either direction.
+
+CaptureBridge-led:
+
+1. Press `START` or `STOP` in CaptureBridge Hub.
+2. The PC sends `1` or `0` to the Arduino.
+3. The Arduino drives the configured digital output.
+4. Vicon reacts to that signal.
+
+Vicon-led:
+
+1. Configure Vicon analog output in Lock Lab.
+2. Wire Vicon signal output to Arduino `A0`.
+3. Wire Vicon ground to Arduino analog ground.
+4. Start CaptureBridge Hub.
+5. Press `ARM`.
+6. Vicon signal changes are converted by Arduino into `START` or `STOP` for the hub.
+
+For common Vicon trigger wiring, set `OUTPUT_PIN` to `7` in
+[ArduinoBridge.ino](ArduinoBridge/ArduinoBridge.ino) before upload. The
+included [ArduinoTrigger.Monitors](ArduinoBridge/ArduinoTrigger.Monitors) file
+is a reference for threshold-based Vicon start and stop actions.
+
+## Configuration
+
+CaptureBridge Hub reads [app_config.json](app_config.json) at startup.
+
+Important settings:
+
+- `default_save_path`: where transferred phone files are written by default
+- `name_separator`: separator used in the generated capture name
+- `name_fields`: the ordered fields shown in the naming UI
+- `phone_stream`: live preview settings
+- `camera_defaults`: first-run camera defaults before a saved camera profile exists
+
+On first startup, the app prefers a shared `1920 x 1080` camera mode and selects
+the highest FPS available for that mode across the connected phones. It starts
+with ISO `800` and a shutter of `1 / (2 * fps)`, which is the standard
+180-degree shutter baseline. After camera settings are changed, the last profile
+is saved locally in `capturebridge_state.json` and reused on the next startup.
+
+For motion analysis, `1 / (2 * fps)` is a sensible starting point. If motion
+blur is still too visible and lighting allows it, try `1 / (4 * fps)` or faster.
+ISO `800` is a clean starting value in a well-lit lab; use `1600` or `2000` if
+the image is too dark at high FPS.
+
+Supported name field types:
+
+- `text`
+- `choice`
+- `number`
+
+Useful field options:
+
+- `value_map`: turn a displayed choice into a shorter filename token
+- `output_prefix`, `output_suffix`: add text around a field only in the generated capture name
+- `allow_custom`: allow free text in a choice field
+- `min`, `max`, `pad_to`: numeric validation and zero padding
+- `lockable`: add a lock/unlock button
+- `locked_by_default`: start a field locked
+- `auto_increment_on_stop`: increment a numeric field after `STOP`
+
+Relative `default_save_path` values are resolved relative to the repo or package
+app folder.
+
+Default generated name example:
+
+```text
+CaptureBridge_ID001_TR001
+```
+
+## Offline Package Build
+
+Build the portable offline ZIP with:
+
+```powershell
+.\packaging\Build-MinimalOffline.ps1
+```
+
+The ZIP is written to:
+
+```text
+dist/CaptureBridge_Hub_Minimal_Offline.zip
+```
+
+The builder copies:
+
+- app source files
+- minimal app config
+- launcher BAT
+- package README
+- [ArduinoBridge/](ArduinoBridge/)
+- portable Python runtime
+- `pyserial`
+- `Pillow`
+
+If a local `.venv` exists, the builder can use the Python installation behind
+that environment. Without `.venv`, it downloads the configured CPython installer
+unless you pass `-PythonInstallerPath` or `-SourcePythonDir`.
+
+## Phone Protocol Summary
+
+UDP discovery:
+
+- request: `DISCOVER_UDPCAMERA`
+- response: `UDPCAMERA_OK 6000`
+
+Desktop to phone over TCP:
+
+- `NAME <generated_name>`
+- `START`
+- `STOP`
+- `LIST`
+- `GET <capture_name>`
+- `GET_ALL`
+- `DELETE <capture_name>`
+- `DELETE_ALL`
+- `SETTINGS_LIST`
+- `SETTINGS <json>`
+- `LIVE_PREVIEW_START <json>`
+- `LIVE_PREVIEW_STOP`
+
+Phone to desktop over TCP:
+
+- `HELLO <device_name>`
+- `NAME_OK <generated_name>`
+- `LIST_OK <json>`
+- `FILE_BEGIN <relative_path> <size_bytes>`
+- `FILE_DONE <relative_path>`
+- `TRANSFER_ACCEPTED`
+- `TRANSFER_BEGIN ...`
+- `TRANSFER_DONE`
+- `TRANSFER_ALL_DONE`
+- `TRANSFER_ERR <reason>`
+- `SETTINGS_LIST_OK <json>`
+- `SETTINGS_OK <json>`
+- `SETTINGS_ERR <reason>`
+- `DELETE_OK <capture_name|ALL>`
+- `DELETE_ERR <reason>`
+- `START_OK`
+- `STOP_OK`
+- `BUSY <reason>`
+- `ERR_UNKNOWN`
+- `LIVE_PREVIEW_STATE <json|text>`
+
+Payload notes:
+
+- `LIST_OK` should include a `captures` array.
+- Each capture should include at least `name`, `totalBytes`, and `files`.
+- File transfer uses `FILE_BEGIN`, raw bytes, then `FILE_DONE`.
+- Camera settings payloads should include `resolutions`, `current`, and optionally `position`.
+- Preview start payload includes `host`, `port`, `maxFps`, `jpegQuality`, and `maxDimension`.
+
+## Troubleshooting
+
+### Phones Do Not Appear
+
+- Confirm PC and phones are on the same private network.
+- Confirm UDP `6000` is allowed through the Windows firewall.
+- Check that the phone client is compatible with this protocol.
+- Disable VPN or guest-network isolation for testing.
+
+### Live Preview Does Not Show Frames
+
+- Confirm UDP `6101` is allowed through the Windows firewall.
+- Confirm `phone_stream.enabled` is `true` in [app_config.json](app_config.json).
+- Confirm the phone is checked in the `Streams` section.
+- Check the app log for UDP diagnostics.
+
+### Arduino Upload Fails With `Access is denied`
+
+Cause: CaptureBridge Hub or another process has the COM port open.
+
+Fix:
+
+1. Close CaptureBridge Hub.
+2. Close Arduino IDE Serial Monitor and Serial Plotter windows.
+3. Retry the upload.
+
+### `START` Is Disabled
+
+This is expected when:
+
+- a capture is already running
+- a file transfer is in progress
+- the Arduino listener is armed
+- connected phones have not confirmed the shared camera profile
+
+### No Files Appear After Transfer
+
+- Check the selected save path.
+- Confirm the phone sent `FILE_BEGIN`, raw bytes, and `FILE_DONE`.
+- Review the app log for transfer or path errors.
+
+## Notes
+
+- The app automatically re-sends the generated `NAME` until connected phones acknowledge it.
+- The Arduino listener is armed and disarmed from the UI.
+- If ports change in code or config, update firewall rules and phone clients accordingly.

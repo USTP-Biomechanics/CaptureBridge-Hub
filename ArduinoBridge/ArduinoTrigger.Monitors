@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<Monitors>
+
+  <Channels>
+    <Channel FactoryName="com.vicon.trinity.Device">
+      <ParamList name="">
+        <Param name="DeviceID" value="11"/>
+        <Param name="DeviceTag" value="63595434cae654758da3c327103654d8"/>
+        <Param name="DeviceOutputID" value="1"/>
+        <Param name="DeviceOutputComponentIDs" value="(1 1 )"/>
+        <Param name="DeviceOutputGlobal" value="false"/>
+      </ParamList>
+    </Channel>
+    <Channel FactoryName="com.vicon.trinity.Device">
+      <ParamList name="">
+        <Param name="DeviceID" value="11"/>
+        <Param name="DeviceTag" value="eb3e2e305648da4632ffbef8ede79ac7"/>
+        <Param name="DeviceOutputID" value="1"/>
+        <Param name="DeviceOutputComponentIDs" value="(1 1 )"/>
+        <Param name="DeviceOutputGlobal" value="false"/>
+      </ParamList>
+    </Channel>
+    <CachedChannel Index="0"/>
+    <CachedChannel Index="1"/>
+  </Channels>
+
+  <Monitor DisplayName="Generic Analog #2 - Electric Potential:1" Enabled="1" Name="com.vicon.trinity.ChannelThreshold">
+    <ParamList name="">
+      <Param name="CacheName" value="com.vicon.trinity.ChannelThresholdCache"/>
+      <Param name="CacheString" value="com.vicon.trinity.Device 11 eb3e2e305648da4632ffbef8ede79ac7 1 false:1"/>
+      <Param name="Component" value="1"/>
+      <Param name="Mode" value="0"/>
+      <Param name="Upper" value="1"/>
+      <Param name="Lower" value="0"/>
+      <Param name="Description" value="Imported Generic Analog #2 - Electric Potential"/>
+      <Param name="TriggerCondition" value="0"/>
+    </ParamList>
+    <Actions>
+      <Action DisplayName="Capture" Enabled="1" Name="com.vicon.trinity.ActionCapture">
+        <ParamList name="">
+          <Param name="Action" value="Start"/>
+        </ParamList>
+      </Action>
+    </Actions>
+  </Monitor>
+
+  <Monitor DisplayName="Generic Analog #2 - Electric Potential:1" Enabled="1" Name="com.vicon.trinity.ChannelThreshold">
+    <ParamList name="">
+      <Param name="CacheName" value="com.vicon.trinity.ChannelThresholdCache"/>
+      <Param name="CacheString" value="com.vicon.trinity.Device 11 eb3e2e305648da4632ffbef8ede79ac7 1 false:1"/>
+      <Param name="Component" value="1"/>
+      <Param name="Mode" value="1"/>
+      <Param name="Upper" value="0"/>
+      <Param name="Lower" value="1"/>
+      <Param name="Description" value="Imported Generic Analog #2 - Electric Potential"/>
+      <Param name="TriggerCondition" value="0"/>
+    </ParamList>
+    <Actions>
+      <Action DisplayName="Capture" Enabled="1" Name="com.vicon.trinity.ActionCapture">
+        <ParamList name="">
+          <Param name="Action" value="Stop"/>
+        </ParamList>
+      </Action>
+    </Actions>
+  </Monitor>
+
+  <Monitor DisplayName="Generic Analog #1 - Electric Potential:1" Enabled="1" Name="com.vicon.trinity.ChannelThreshold">
+    <ParamList name="">
+      <Param name="CacheName" value="com.vicon.trinity.ChannelThresholdCache"/>
+      <Param name="CacheString" value="com.vicon.trinity.Device 11 63595434cae654758da3c327103654d8 1 false:1"/>
+      <Param name="Component" value="1"/>
+      <Param name="Mode" value="0"/>
+      <Param name="Upper" value="1"/>
+      <Param name="Lower" value="0"/>
+      <Param name="Description" value="Imported Generic Analog #2 - Electric Potential"/>
+      <Param name="TriggerCondition" value="0"/>
+    </ParamList>
+    <Actions>
+      <Action DisplayName="Capture" Enabled="1" Name="com.vicon.trinity.ActionCapture">
+        <ParamList name="">
+          <Param name="Action" value="Start"/>
+        </ParamList>
+      </Action>
+    </Actions>
+  </Monitor>
+
+  <Monitor DisplayName="Generic Analog #1 - Electric Potential:1" Enabled="1" Name="com.vicon.trinity.ChannelThreshold">
+    <ParamList name="">
+      <Param name="CacheName" value="com.vicon.trinity.ChannelThresholdCache"/>
+      <Param name="CacheString" value="com.vicon.trinity.Device 11 63595434cae654758da3c327103654d8 1 false:1"/>
+      <Param name="Component" value="1"/>
+      <Param name="Mode" value="1"/>
+      <Param name="Upper" value="0"/>
+      <Param name="Lower" value="1"/>
+      <Param name="Description" value="Imported Generic Analog #2 - Electric Potential"/>
+      <Param name="TriggerCondition" value="0"/>
+    </ParamList>
+    <Actions>
+      <Action DisplayName="Capture" Enabled="1" Name="com.vicon.trinity.ActionCapture">
+        <ParamList name="">
+          <Param name="Action" value="Stop"/>
+        </ParamList>
+      </Action>
+    </Actions>
+  </Monitor>
+
+</Monitors>

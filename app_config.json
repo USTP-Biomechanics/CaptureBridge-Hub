@@ -1,0 +1,49 @@
+{
+  "default_save_path": ".",
+  "name_separator": "_",
+  "name_fields": [
+    {
+      "key": "key",
+      "label": "Key",
+      "type": "text",
+      "default": "CaptureBridge"
+    },
+    {
+      "key": "id",
+      "label": "ID (001-999)",
+      "type": "number",
+      "default": "001",
+      "min": 1,
+      "max": 999,
+      "pad_to": 3,
+      "output_prefix": "ID"
+    },
+    {
+      "key": "trial",
+      "label": "Trial number",
+      "type": "number",
+      "default": "001",
+      "min": 1,
+      "max": 999,
+      "pad_to": 3,
+      "output_prefix": "TR",
+      "lockable": true,
+      "locked_by_default": true,
+      "auto_increment_on_stop": true
+    }
+  ],
+  "phone_stream": {
+    "enabled": true,
+    "udp_port": 6101,
+    "max_fps": 20,
+    "jpeg_quality": 70,
+    "max_dimension": 1920,
+    "socket_buffer_bytes": 4194304
+  },
+  "camera_defaults": {
+    "preferred_width": 1920,
+    "preferred_height": 1080,
+    "iso": 800,
+    "shutter_fps_multiplier": 2.0
+  }
+}
