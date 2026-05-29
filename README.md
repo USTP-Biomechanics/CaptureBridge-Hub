@@ -1,10 +1,24 @@
 # CaptureBridge Hub
 
-CaptureBridge Hub is the Windows desktop control app for synchronized mobile
-motion capture sessions. It connects to compatible iOS and Android clients,
-keeps capture names and camera settings aligned, starts and stops all phones
-together, transfers recordings back to the PC, and can bridge trigger events to
-Arduino and Vicon lab workflows.
+CaptureBridge is a local-network acquisition system for smartphone-based
+markerless motion-analysis workflows. CaptureBridge Hub is the Windows desktop
+control app: it connects to compatible iOS and Android clients, keeps capture
+names and camera settings aligned, starts and stops all phones together,
+transfers recordings back to the PC, and can bridge trigger events to Arduino
+and Vicon lab workflows.
+
+The goal is repeatable acquisition, not a locked-in analysis algorithm. The Hub
+collects organized phone videos and metadata that can be used downstream with
+single-camera monocular analysis, multi-camera reconstruction, video-to-pose
+workflows, mesh-based pose estimation, or OpenSim-compatible
+inverse-kinematics pipelines.
+
+## Companion Android App
+
+CaptureBridge Hub is designed to work with the CaptureBridge Android phone
+client. For normal lab use, the portable Hub release includes a ready-to-install
+Android APK; the phone app source lives in
+[USTP-Biomechanics/CaptureBridge-Android](https://github.com/USTP-Biomechanics/CaptureBridge-Android).
 
 Important network note: the PC and phones usually need to be on the same
 private Wi-Fi or LAN, Windows should use the Private network profile, and
@@ -13,14 +27,16 @@ phone streaming UDP port `6101`.
 
 ## Quick Start
 
-For normal use, download the portable release ZIP, extract it, install the
-included Android APK on the phone, and start the Windows app with the BAT file.
-That is the easiest path and does not require Python or internet access on the
-lab PC.
+For normal use, download the portable release ZIP from the
+[latest GitHub release](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/latest),
+extract it, install the included Android APK on the phone, and start the
+Windows app with the BAT file. That is the easiest path and does not require
+Python or internet access on the lab PC.
 
 ### Recommended Portable Release
 
-1. Download `CaptureBridge_Hub_Minimal_Offline.zip` from the GitHub release.
+1. Download `CaptureBridge_Hub_Minimal_Offline.zip` from the
+   [latest GitHub release](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/latest).
 2. Extract the ZIP to a normal folder, for example `Documents` or `Desktop`.
 3. Copy `app-release.apk` from the extracted folder to the Android phone.
 4. Install `app-release.apk` on the phone. If Android asks, allow installing
@@ -117,15 +133,21 @@ netsh advfirewall firewall add rule name="CaptureBridge Hub Phone Stream UDP 610
 
 ## Citation
 
-If you use CaptureBridge Hub in academic work, please cite it as:
+If you use CaptureBridge in academic work, please cite the shared software
+citation:
 
 ```text
-Simonlehner, M. (2026). CaptureBridge Hub [Computer software].
+Simonlehner, M. (2026). CaptureBridge: Hub and Android client [Computer software suite].
 https://github.com/USTP-Biomechanics/CaptureBridge-Hub
+https://github.com/USTP-Biomechanics/CaptureBridge-Android
 ```
 
-The repository also includes [CITATION.cff](CITATION.cff), which GitHub uses for
-the `Cite this repository` button.
+The repository also includes the shared [CITATION.cff](CITATION.cff), which
+GitHub uses for the `Cite this repository` button.
+
+## Support
+
+For questions, contact mark.simonlehner@ustp.at.
 
 ## Running The App
 
@@ -133,7 +155,8 @@ the `Cite this repository` button.
 
 For a lab PC that should not need Python or internet access:
 
-1. Download and extract `CaptureBridge_Hub_Minimal_Offline.zip`.
+1. Download and extract `CaptureBridge_Hub_Minimal_Offline.zip` from the
+   [latest GitHub release](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/latest).
 2. Install the included `app-release.apk` on the Android phone.
 3. Put the PC and phone on the same private Wi-Fi or LAN.
 4. Double-click `Run_CaptureBridge_Hub.bat` inside the extracted folder.
@@ -411,7 +434,7 @@ Desktop to phone over TCP:
 Phone to desktop over TCP:
 
 - `HELLO <device_name>`
-- `NAME_OK <generated_name>`
+- `NAME_OK [generated_name]`
 - `LIST_OK <json>`
 - `FILE_BEGIN <relative_path> <size_bytes>`
 - `FILE_DONE <relative_path>`
@@ -436,6 +459,8 @@ Payload notes:
 - `LIST_OK` should include a `captures` array.
 - Each capture should include at least `name`, `totalBytes`, and `files`.
 - File transfer uses `FILE_BEGIN`, raw bytes, then `FILE_DONE`.
+- `NAME_OK` may include the echoed generated name; if it does not, the Hub uses
+  the last name it sent to that phone.
 - Camera settings payloads should include `resolutions`, `current`, and optionally `position`.
 - Preview start payload includes `host`, `port`, `maxFps`, `jpegQuality`, and `maxDimension`.
 
