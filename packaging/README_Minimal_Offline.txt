@@ -25,6 +25,7 @@ Included:
   - pyserial
   - Pillow for raw phone stream previews
   - ArduinoBridge folder with the sketch and Vicon monitor file
+  - app-release.apk Android client installer
 
 Not included:
   - Extra model runtime packages

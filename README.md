@@ -84,7 +84,8 @@ For a lab PC that should not need Python or internet access:
 2. Double-click `Run_CaptureBridge_Hub.bat` inside the extracted folder.
 
 The offline package includes the app, portable CPython with Tkinter, `pyserial`,
-`Pillow`, and the [ArduinoBridge/](ArduinoBridge/) folder.
+`Pillow`, the [ArduinoBridge/](ArduinoBridge/) folder, and the Android client
+APK.
 
 ## Repository Layout
 
@@ -314,6 +315,7 @@ The builder copies:
 - minimal app config
 - launcher BAT
 - package README
+- Android client APK
 - [ArduinoBridge/](ArduinoBridge/)
 - portable Python runtime
 - `pyserial`
@@ -322,6 +324,23 @@ The builder copies:
 If a local `.venv` exists, the builder can use the Python installation behind
 that environment. Without `.venv`, it downloads the configured CPython installer
 unless you pass `-PythonInstallerPath` or `-SourcePythonDir`.
+
+### GitHub Release Build
+
+The GitHub Actions workflow in `.github/workflows/release.yml` builds the
+offline ZIP on a Windows runner and uploads only
+`CaptureBridge_Hub_Minimal_Offline.zip` as a GitHub Release asset. The generated
+`dist/` folder is ignored and does not need to be committed.
+
+To create a release from a tag:
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+You can also run the `Build Release Zip` workflow manually from the GitHub
+Actions tab and enter the release tag name.
 
 ## Phone Protocol Summary
 

@@ -4,4 +4,5 @@ __pycache__/
 *.pyc
 *.pyo
 build/
+dist/
 capturebridge_state.json

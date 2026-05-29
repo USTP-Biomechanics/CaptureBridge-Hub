@@ -150,6 +150,7 @@ Copy-RequiredFile -Source (Join-Path $repoRoot "requirements.txt") -Destination 
 Copy-RequiredFile -Source (Join-Path $scriptDir "minimal_app_config.json") -Destination (Join-Path $appDir "app_config.json")
 Copy-RequiredFile -Source (Join-Path $scriptDir "Run_MinimalOffline.bat") -Destination (Join-Path $stageRoot "Run_CaptureBridge_Hub.bat")
 Copy-RequiredFile -Source (Join-Path $scriptDir "README_Minimal_Offline.txt") -Destination (Join-Path $stageRoot "README_Minimal_Offline.txt")
+Copy-RequiredFile -Source (Join-Path $scriptDir "app-release.apk") -Destination (Join-Path $stageRoot "app-release.apk")
 Copy-RequiredFile -Source (Join-Path $repoRoot "README.md") -Destination (Join-Path $stageRoot "README.md")
 
 $arduinoSource = Join-Path $repoRoot "ArduinoBridge"
