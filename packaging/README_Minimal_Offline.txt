@@ -5,9 +5,13 @@ installation.
 
 Start:
   1. Extract the ZIP.
-  2. Double-click Run_CaptureBridge_Hub.bat.
-  3. Keep the PC and iOS/Android phones on the same private network.
-  4. Allow Windows firewall access on Private networks if prompted.
+  2. Copy app-release.apk to the Android phone.
+  3. Install app-release.apk on the phone. If Android asks, allow installing
+     this APK from the file manager or browser you are using.
+  4. Keep the PC and phone on the same private Wi-Fi or LAN.
+  5. Double-click Run_CaptureBridge_Hub.bat on the PC.
+  6. Allow Windows firewall access on Private networks if prompted.
+  7. Start the CaptureBridge Android app and confirm the phone appears in the hub.
 
 Network ports:
   - TCP 6000 for phone control and file transfer

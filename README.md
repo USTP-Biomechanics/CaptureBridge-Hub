@@ -13,19 +13,42 @@ phone streaming UDP port `6101`.
 
 ## Quick Start
 
-Use the BAT files. That is the intended way to run the app.
+For normal use, download the portable release ZIP, extract it, install the
+included Android APK on the phone, and start the Windows app with the BAT file.
+That is the easiest path and does not require Python or internet access on the
+lab PC.
+
+### Recommended Portable Release
+
+1. Download `CaptureBridge_Hub_Minimal_Offline.zip` from the GitHub release.
+2. Extract the ZIP to a normal folder, for example `Documents` or `Desktop`.
+3. Copy `app-release.apk` from the extracted folder to the Android phone.
+4. Install `app-release.apk` on the phone. If Android asks, allow installing
+   this APK from the file manager or browser you are using.
+5. Put the PC and phone on the same private Wi-Fi or LAN.
+6. On the PC, double-click `Run_CaptureBridge_Hub.bat` in the extracted folder.
+7. Allow Windows firewall access on Private networks when prompted.
+8. Start the CaptureBridge Android app on the phone.
+9. Confirm the phone appears in CaptureBridge Hub.
+10. Fill in the session naming fields and confirm the camera profile is synced.
+11. Press `START`, then `STOP`.
+12. Transfer the current capture or all captures from the hub.
+
+The portable release includes the Windows app, its Python runtime, the Android
+APK, and the Arduino/Vicon bridge files. No separate Python install is needed.
+
+### Repo Run For Development
+
+Use the BAT files. That is the intended way to run the app from a checked-out
+repository.
 
 1. Put the PC and phones on the same private network.
 2. Double-click [Run_CaptureBridge_Hub.bat](Run_CaptureBridge_Hub.bat).
-3. If this is the first run, the launcher automatically calls
+3. If this is the first repo run, the launcher automatically calls
    [Setup_CaptureBridge_Hub.bat](Setup_CaptureBridge_Hub.bat).
 4. Allow Windows firewall access on Private networks when prompted.
 5. Start the compatible iOS or Android phone clients.
 6. Confirm the phones appear in CaptureBridge Hub.
-7. Fill in the session naming fields.
-8. Confirm the shared camera profile is synced.
-9. Press `START`, then `STOP`.
-10. Transfer the current capture or all captures from the app.
 
 If setup reports that Python is missing, install Python 3 for Windows and run
 [Run_CaptureBridge_Hub.bat](Run_CaptureBridge_Hub.bat) again.
@@ -64,6 +87,21 @@ netsh advfirewall firewall add rule name="CaptureBridge Hub Phone Stream UDP 610
 
 ## Running The App
 
+### Offline Portable Run
+
+For a lab PC that should not need Python or internet access:
+
+1. Download and extract `CaptureBridge_Hub_Minimal_Offline.zip`.
+2. Install the included `app-release.apk` on the Android phone.
+3. Put the PC and phone on the same private Wi-Fi or LAN.
+4. Double-click `Run_CaptureBridge_Hub.bat` inside the extracted folder.
+5. Allow Windows firewall access on Private networks if prompted.
+
+The offline package includes the app, portable CPython with Tkinter, `pyserial`,
+`Pillow`, the [ArduinoBridge/](ArduinoBridge/) folder, and the Android client
+APK. A compatible iOS client can also be used, but it is not included in this
+portable package.
+
 ### Normal Repo Run
 
 Double-click:
@@ -75,17 +113,6 @@ Run_CaptureBridge_Hub.bat
 The launcher checks for `.venv`. If the environment is missing, it runs
 `Setup_CaptureBridge_Hub.bat`, creates the local virtual environment, installs
 [requirements.txt](requirements.txt), and starts the app.
-
-### Offline Portable Run
-
-For a lab PC that should not need Python or internet access:
-
-1. Extract `dist/CaptureBridge_Hub_Minimal_Offline.zip`.
-2. Double-click `Run_CaptureBridge_Hub.bat` inside the extracted folder.
-
-The offline package includes the app, portable CPython with Tkinter, `pyserial`,
-`Pillow`, the [ArduinoBridge/](ArduinoBridge/) folder, and the Android client
-APK.
 
 ## Repository Layout
 
