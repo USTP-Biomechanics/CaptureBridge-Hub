@@ -153,6 +153,11 @@ Copy-RequiredFile -Source (Join-Path $scriptDir "README_Minimal_Offline.txt") -D
 Copy-RequiredFile -Source (Join-Path $scriptDir "app-release.apk") -Destination (Join-Path $stageRoot "app-release.apk")
 Copy-RequiredFile -Source (Join-Path $repoRoot "README.md") -Destination (Join-Path $stageRoot "README.md")
 
+$docsSource = Join-Path $repoRoot "docs"
+if (Test-Path -LiteralPath $docsSource) {
+    Copy-Item -LiteralPath $docsSource -Destination (Join-Path $stageRoot "docs") -Recurse -Force
+}
+
 $arduinoSource = Join-Path $repoRoot "ArduinoBridge"
 if (-not (Test-Path -LiteralPath $arduinoSource)) {
     throw "Missing Arduino bridge folder: $arduinoSource"

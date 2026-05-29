@@ -53,6 +53,42 @@ repository.
 If setup reports that Python is missing, install Python 3 for Windows and run
 [Run_CaptureBridge_Hub.bat](Run_CaptureBridge_Hub.bat) again.
 
+## Citation
+
+If you use CaptureBridge Hub in academic work, please cite it using the metadata
+in [CITATION.cff](CITATION.cff). GitHub also shows a `Cite this repository`
+button when this file is present.
+
+## Interface Overview
+
+![Annotated CaptureBridge Hub main window](docs/images/hub-main-window.png)
+
+The red labels in the screenshot mark the main operator areas:
+
+- **A**: Global camera profile for shutter, resolution, FPS, and ISO. These
+  settings are synced to the connected phones before capture. A shorter shutter
+  can reduce motion blur but needs more light; higher ISO brightens the image
+  but can add noise. See [Configuration](#configuration) for saved defaults.
+- **B**: Capture naming fields. The generated capture name is sent to all
+  phones before recording. The fields, choices, order, and output formatting can
+  be changed in [app_config.json](app_config.json).
+- **C**: Session controls. `START` and `STOP` control all connected phones.
+  `ARM` listens for Arduino or Vicon trigger input when the bridge is connected.
+  If the phones are not in silent mode, each phone plays a tone when capture
+  starts and stops. See [Arduino Bridge](#arduino-bridge) and
+  [Vicon Nexus Integration](#vicon-nexus-integration).
+- **D**: Global transfer and delete actions for all phones. Transfers are saved
+  to the selected folder. Delete actions must be unlocked before the delete
+  buttons can be used.
+- **E**: Live preview stream controls. A single phone can usually stream at
+  `1920 x 1080`; for multiple simultaneous streams, reduce the stream
+  resolution or max dimension. Streaming also drains phone batteries faster. See
+  [Phone Live Preview](#phone-live-preview).
+- **F**: Captures and files stored on the phone selected in **G**.
+- **G**: Phone selector for per-phone file lists, transfers, deletes, and status.
+- **H**: Log output for discovery, connection, sync, transfer, stream, and
+  troubleshooting messages.
+
 ## Network And Firewall
 
 CaptureBridge Hub listens on:
@@ -180,37 +216,11 @@ Stream settings live under `phone_stream` in [app_config.json](app_config.json):
 
 ## User Interface
 
-The app window is split into three working areas.
-
-Left:
-
-- live log
-- connected phone list
-- `START`, `STOP`, `ARM`, `QUIT`
-
-Middle:
-
-- transfer save path
-- transfer current capture on all phones
-- transfer all captures on all phones
-- delete current capture on all phones
-- delete all captures on all phones
-- generated capture name
-- configurable naming fields
-- global camera controls
-- camera sync summary
-
-Right:
-
-- phone picker
-- multi-phone stream checkboxes
-- live preview grid
-- per-phone capture list
-- transfer selected capture
-- transfer all captures from selected phone
-- delete selected capture
-- delete all captures from selected phone
-- transfer progress and per-phone status
+The app window is organized around the annotated areas shown in
+[Interface Overview](#interface-overview). The left side is used for connection
+state, log output, and session controls; the middle area is used for global
+camera, naming, transfer, and delete actions; the right side is used for
+per-phone streams, file lists, transfers, deletes, and status.
 
 ## Arduino Bridge
 
@@ -342,6 +352,7 @@ The builder copies:
 - minimal app config
 - launcher BAT
 - package README
+- README image assets
 - Android client APK
 - [ArduinoBridge/](ArduinoBridge/)
 - portable Python runtime
