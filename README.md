@@ -53,12 +53,6 @@ repository.
 If setup reports that Python is missing, install Python 3 for Windows and run
 [Run_CaptureBridge_Hub.bat](Run_CaptureBridge_Hub.bat) again.
 
-## Citation
-
-If you use CaptureBridge Hub in academic work, please cite it using the metadata
-in [CITATION.cff](CITATION.cff). GitHub also shows a `Cite this repository`
-button when this file is present.
-
 ## Interface Overview
 
 ![Annotated CaptureBridge Hub main window](docs/images/hub-main-window.png)
@@ -120,6 +114,18 @@ netsh advfirewall firewall add rule name="CaptureBridge Hub UDP Discovery 6000" 
 netsh advfirewall firewall add rule name="CaptureBridge Hub TCP Control 6000" dir=in action=allow protocol=TCP localport=6000 profile=private
 netsh advfirewall firewall add rule name="CaptureBridge Hub Phone Stream UDP 6101" dir=in action=allow protocol=UDP localport=6101 profile=private
 ```
+
+## Citation
+
+If you use CaptureBridge Hub in academic work, please cite it as:
+
+```text
+Simonlehner, M. (2026). CaptureBridge Hub [Computer software].
+https://github.com/USTP-Biomechanics/CaptureBridge-Hub
+```
+
+The repository also includes [CITATION.cff](CITATION.cff), which GitHub uses for
+the `Cite this repository` button.
 
 ## Running The App
 
