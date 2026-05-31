@@ -509,4 +509,7 @@ This is expected when:
 
 - The app automatically re-sends the generated `NAME` until connected phones acknowledge it.
 - The Arduino listener is armed and disarmed from the UI.
+- Release testing included an Arduino Uno trigger bridge and two Samsung Galaxy
+  S25 Ultra phones. This is implementation testing, not a formal claim of
+  frame-level synchronization accuracy.
 - If ports change in code or config, update firewall rules and phone clients accordingly.
