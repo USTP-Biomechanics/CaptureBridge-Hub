@@ -13,6 +13,11 @@ single-camera monocular analysis, multi-camera reconstruction, video-to-pose
 workflows, mesh-based pose estimation, or OpenSim-compatible
 inverse-kinematics pipelines.
 
+![CaptureBridge Hub system architecture](docs/images/architecturefigure1.png)
+
+_Figure 1. CaptureBridge Hub coordinates Android phones over the local network
+and can bridge external trigger systems through Arduino._
+
 ## Companion Android App
 
 CaptureBridge Hub is designed to work with the CaptureBridge Android phone
