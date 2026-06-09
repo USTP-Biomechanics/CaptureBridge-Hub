@@ -144,21 +144,23 @@ New-Item -ItemType Directory -Force -Path $downloadsDir | Out-Null
 
 Write-Host ""
 Write-Host "Copying minimal app files..."
-Copy-RequiredFile -Source (Join-Path $repoRoot "tcp_arduino_sync.py") -Destination $appDir
-Copy-RequiredFile -Source (Join-Path $repoRoot "phone_stream.py") -Destination $appDir
+Copy-RequiredFile -Source (Join-Path $repoRoot "src\tcp_arduino_sync.py") -Destination $appDir
+Copy-RequiredFile -Source (Join-Path $repoRoot "src\phone_stream.py") -Destination $appDir
 Copy-RequiredFile -Source (Join-Path $repoRoot "requirements.txt") -Destination $appDir
 Copy-RequiredFile -Source (Join-Path $scriptDir "minimal_app_config.json") -Destination (Join-Path $appDir "app_config.json")
 Copy-RequiredFile -Source (Join-Path $scriptDir "Run_MinimalOffline.bat") -Destination (Join-Path $stageRoot "Run_CaptureBridge_Hub.bat")
 Copy-RequiredFile -Source (Join-Path $scriptDir "README_Minimal_Offline.txt") -Destination (Join-Path $stageRoot "README_Minimal_Offline.txt")
 Copy-RequiredFile -Source (Join-Path $scriptDir "app-release.apk") -Destination (Join-Path $stageRoot "app-release.apk")
 Copy-RequiredFile -Source (Join-Path $repoRoot "README.md") -Destination (Join-Path $stageRoot "README.md")
+Copy-RequiredFile -Source (Join-Path $repoRoot "LICENSE.txt") -Destination (Join-Path $stageRoot "LICENSE.txt")
+Copy-RequiredFile -Source (Join-Path $repoRoot "CITATION.cff") -Destination (Join-Path $stageRoot "CITATION.cff")
 
 $docsSource = Join-Path $repoRoot "docs"
 if (Test-Path -LiteralPath $docsSource) {
     Copy-Item -LiteralPath $docsSource -Destination (Join-Path $stageRoot "docs") -Recurse -Force
 }
 
-$arduinoSource = Join-Path $repoRoot "ArduinoBridge"
+$arduinoSource = Join-Path $repoRoot "src\ArduinoBridge"
 if (-not (Test-Path -LiteralPath $arduinoSource)) {
     throw "Missing Arduino bridge folder: $arduinoSource"
 }

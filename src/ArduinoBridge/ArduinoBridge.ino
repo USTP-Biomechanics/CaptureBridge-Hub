@@ -1,4 +1,4 @@
-// Arduino bridge for tcp_arduino_sync.py
+// Arduino bridge for src/tcp_arduino_sync.py
 //
 // PC -> Arduino:
 //   '1' or "START" drives D10 HIGH

@@ -168,7 +168,7 @@ For a lab PC that should not need Python or internet access:
 5. Allow Windows firewall access on Private networks if prompted.
 
 The offline package includes the app, portable CPython with Tkinter, `pyserial`,
-`Pillow`, the [ArduinoBridge/](ArduinoBridge/) folder, and the Android client
+`Pillow`, the Arduino bridge files, and the Android client
 APK. A compatible iOS client can also be used, but it is not included in this
 portable package.
 
@@ -186,13 +186,16 @@ The launcher checks for `.venv`. If the environment is missing, it runs
 
 ## Repository Layout
 
-- [tcp_arduino_sync.py](tcp_arduino_sync.py): desktop app
-- [phone_stream.py](phone_stream.py): raw UDP phone preview receiver and Tk preview UI
+The repository keeps executable source under [src/](src/) for SoftwareX
+submission compatibility.
+
+- [src/tcp_arduino_sync.py](src/tcp_arduino_sync.py): desktop app
+- [src/phone_stream.py](src/phone_stream.py): raw UDP phone preview receiver and Tk preview UI
 - [app_config.json](app_config.json): save path, naming fields, and stream settings
 - [requirements.txt](requirements.txt): Python dependencies for repo runs
 - [Run_CaptureBridge_Hub.bat](Run_CaptureBridge_Hub.bat): normal launcher
 - [Setup_CaptureBridge_Hub.bat](Setup_CaptureBridge_Hub.bat): normal setup helper
-- [ArduinoBridge/](ArduinoBridge/): Arduino sketch and Vicon monitor definition
+- [src/ArduinoBridge/](src/ArduinoBridge/): Arduino sketch and Vicon monitor definition
 - [packaging/](packaging/): offline ZIP builder and files copied into the package
 
 ## Main Features
@@ -258,7 +261,7 @@ per-phone streams, file lists, transfers, deletes, and status.
 
 ## Arduino Bridge
 
-Upload [ArduinoBridge.ino](ArduinoBridge/ArduinoBridge.ino) before using the
+Upload [ArduinoBridge.ino](src/ArduinoBridge/ArduinoBridge.ino) before using the
 hardware bridge. Close CaptureBridge Hub before uploading, because the app opens
 the Arduino serial port when it starts and the Arduino IDE cannot upload while
 that port is in use.
@@ -314,8 +317,8 @@ Vicon-led:
 6. Vicon signal changes are converted by Arduino into `START` or `STOP` for the hub.
 
 For common Vicon trigger wiring, set `OUTPUT_PIN` to `7` in
-[ArduinoBridge.ino](ArduinoBridge/ArduinoBridge.ino) before upload. The
-included [ArduinoTrigger.Monitors](ArduinoBridge/ArduinoTrigger.Monitors) file
+[ArduinoBridge.ino](src/ArduinoBridge/ArduinoBridge.ino) before upload. The
+included [ArduinoTrigger.Monitors](src/ArduinoBridge/ArduinoTrigger.Monitors) file
 is a reference for threshold-based Vicon start and stop actions.
 
 ## Configuration
@@ -386,9 +389,10 @@ The builder copies:
 - minimal app config
 - launcher BAT
 - package README
+- license and citation metadata
 - README image assets
 - Android client APK
-- [ArduinoBridge/](ArduinoBridge/)
+- [src/ArduinoBridge/](src/ArduinoBridge/)
 - portable Python runtime
 - `pyserial`
 - `Pillow`

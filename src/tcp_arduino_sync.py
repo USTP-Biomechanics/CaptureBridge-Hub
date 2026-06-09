@@ -45,7 +45,16 @@ CLIENT_SOCKET_TIMEOUT_SEC = 1.0
 ARDUINO_WRITE_TIMEOUT_SEC = 1.0
 MAX_LOG_LINES = 2000
 LOG_TRIM_BATCH_LINES = 250
-APP_ROOT = os.path.dirname(os.path.abspath(__file__))
+APP_SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def resolve_app_root(source_dir: str) -> str:
+    if os.path.basename(source_dir).lower() == "src":
+        return os.path.dirname(source_dir)
+    return source_dir
+
+
+APP_ROOT = resolve_app_root(APP_SOURCE_DIR)
 APP_CONFIG_PATH = os.path.join(APP_ROOT, "app_config.json")
 APP_STATE_PATH = os.path.join(APP_ROOT, "capturebridge_state.json")
 INVALID_FILENAME_CHARS = set('<>:"/\\|?*')

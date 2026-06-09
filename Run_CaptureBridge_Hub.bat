@@ -9,18 +9,18 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 if exist ".venv\Scripts\pythonw.exe" (
-    start "" ".venv\Scripts\pythonw.exe" "tcp_arduino_sync.py"
+    start "" ".venv\Scripts\pythonw.exe" "src\tcp_arduino_sync.py"
     exit /b 0
 )
 
 if exist ".venv\Scripts\python.exe" (
-    ".venv\Scripts\python.exe" "tcp_arduino_sync.py"
+    ".venv\Scripts\python.exe" "src\tcp_arduino_sync.py"
     set "exit_code=%errorlevel%"
     if not "%exit_code%"=="0" pause
     exit /b %exit_code%
 )
 
-python "tcp_arduino_sync.py"
+python "src\tcp_arduino_sync.py"
 set "exit_code=%errorlevel%"
 if not "%exit_code%"=="0" pause
 exit /b %exit_code%
