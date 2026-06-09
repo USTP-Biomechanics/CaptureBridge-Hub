@@ -24,6 +24,9 @@ CaptureBridge Hub is designed to work with the CaptureBridge Android phone
 client. For normal lab use, the portable Hub release includes a ready-to-install
 Android APK; the phone app source lives in
 [USTP-Biomechanics/CaptureBridge-Android](https://github.com/USTP-Biomechanics/CaptureBridge-Android).
+The Android repository also publishes a debug APK from its tag build workflow
+for reproducible review/development builds, but that debug APK is not the
+official install APK for normal lab use.
 
 Important network note: the PC and phones usually need to be on the same
 private Wi-Fi or LAN, Windows should use the Private network profile, and
