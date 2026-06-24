@@ -3,6 +3,8 @@
 __pycache__/
 *.pyc
 *.pyo
+*.apk
 build/
 dist/
+LagTests/
 capturebridge_state.json

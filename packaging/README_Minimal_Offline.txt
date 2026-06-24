@@ -5,8 +5,9 @@ installation.
 
 Start:
   1. Extract the ZIP.
-  2. Copy app-release.apk to the Android phone.
-  3. Install app-release.apk on the phone. If Android asks, allow installing
+  2. Download the Android APK from the latest CaptureBridge Android release:
+     https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest
+  3. Install the downloaded APK on the phone. If Android asks, allow installing
      this APK from the file manager or browser you are using.
   4. Keep the PC and phone on the same private Wi-Fi or LAN.
   5. Double-click Run_CaptureBridge_Hub.bat on the PC.
@@ -28,10 +29,13 @@ Included:
   - tkinter
   - pyserial
   - Pillow for raw phone stream previews
+  - numpy and OpenCV for lag-test video analysis
+  - lag_test folder for the timing target and reports
   - ArduinoBridge folder with the sketch and Vicon monitor file
-  - app-release.apk Android client installer
 
 Not included:
+  - Android client APK, available from:
+    https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest
   - Extra model runtime packages
 
 No app executable is generated. The launcher starts the bundled Python runtime

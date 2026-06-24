@@ -8,10 +8,12 @@ import os
 import json
 import copy
 import queue
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
 import serial
 import serial.tools.list_ports
+from lag_test import LagTiming, LagTimingDisplay, analyze_lag_video, write_lag_report
 # -----------------------------------
 # CONFIG
 # -----------------------------------
@@ -37,6 +39,17 @@ DEFAULT_CAMERA_WIDTH = 1920
 DEFAULT_CAMERA_HEIGHT = 1080
 DEFAULT_CAMERA_ISO = 800
 DEFAULT_CAMERA_SHUTTER_FPS_MULTIPLIER = 2.0
+LAG_TEST_START_TARGET_MS = 1000.0
+LAG_TEST_STOP_TARGET_MS = 2000.0
+LAG_TEST_DURATION_S = (LAG_TEST_STOP_TARGET_MS - LAG_TEST_START_TARGET_MS) / 1000.0
+LAG_TEST_PREPARE_TIMEOUT_MS = 8000
+LAG_TEST_STOP_MARKED_TIMEOUT_MS = 3000
+LAG_TEST_STOP_OK_TIMEOUT_MS = 20000
+LAG_TEST_READY_TIMEOUT_MS = 3000
+LAG_TEST_PHONE_PREROLL_MS = 1000
+LAG_TEST_TRANSFER_ROOT = "LagTests"
+CAPTURE_STOP_OK_TIMEOUT_MS = 20000
+CAPTURE_READY_TIMEOUT_MS = 3000
 TCP_KEEPALIVE_ENABLED = True
 TCP_KEEPALIVE_IDLE_SEC = 30
 TCP_KEEPALIVE_INTERVAL_SEC = 10
@@ -247,6 +260,242 @@ def resolve_safe_transfer_path(save_dir: str, relative_path: str) -> str:
     if os.path.commonpath([base_dir, target_path]) != base_dir:
         raise ValueError("path escapes the save directory")
     return target_path
+
+
+def lag_test_storage_relative_path(relative_path: str) -> str:
+    raw = str(relative_path or "").strip()
+    normalized = raw.replace("\\", "/")
+    first_part = normalized.split("/", 1)[0]
+    if first_part.startswith("lagtest_"):
+        return f"{LAG_TEST_TRANSFER_ROOT}/{normalized}"
+    return raw
+
+
+def _format_protocol_timing_for_log(text: str) -> str:
+    formatted = []
+    values_ns = {}
+    for token in str(text or "").split():
+        if "=" not in token:
+            formatted.append(token)
+            continue
+
+        key, value = token.split("=", 1)
+        if not key.endswith("_ns"):
+            formatted.append(token)
+            continue
+
+        try:
+            ns_value = int(value)
+        except ValueError:
+            formatted.append(token)
+            continue
+
+        values_ns[key] = ns_value
+        if key not in ("phone_rx_ns", "phone_tx_ns"):
+            ms_value = (ns_value + 500_000) // 1_000_000 if ns_value >= 0 else ns_value
+            formatted.append(f"{key[:-3]}_ms={ms_value}")
+
+    phone_rx_ns = values_ns.get("phone_rx_ns")
+    phone_tx_ns = values_ns.get("phone_tx_ns")
+    if phone_rx_ns is not None and phone_tx_ns is not None:
+        delta_ms = (phone_tx_ns - phone_rx_ns) / 1_000_000.0
+        insert_at = 1 if formatted and "=" not in formatted[0] else 0
+        formatted[insert_at:insert_at] = [f"phone_rx_tx_delta_ms={delta_ms:.3f}"]
+
+    return " ".join(formatted)
+
+
+def _truncate_log_text(text: str, limit: int = 240) -> str:
+    text = str(text or "")
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
+
+def _parse_protocol_fields(text: str) -> Tuple[List[str], Dict[str, str]]:
+    labels = []
+    fields = {}
+    for token in str(text or "").split():
+        if "=" in token:
+            key, value = token.split("=", 1)
+            fields[key] = value
+        else:
+            labels.append(token)
+    return labels, fields
+
+
+def _field_float(fields: Dict[str, str], key: str) -> Optional[float]:
+    try:
+        return float(fields[key])
+    except Exception:
+        return None
+
+
+def _fmt_delta_ms(value: Optional[float]) -> Optional[str]:
+    if value is None:
+        return None
+    return f"{value:+.1f} ms"
+
+
+def _phone_rx_tx_delta_ms(fields: Dict[str, str]) -> Optional[float]:
+    direct = _field_float(fields, "phone_rx_tx_delta_ms")
+    if direct is not None:
+        return direct
+    phone_rx_ns = _field_float(fields, "phone_rx_ns")
+    phone_tx_ns = _field_float(fields, "phone_tx_ns")
+    if phone_rx_ns is None or phone_tx_ns is None:
+        return None
+    return (phone_tx_ns - phone_rx_ns) / 1_000_000.0
+
+
+def _format_phone_lifecycle_for_log(cmd: str, rest: str) -> str:
+    labels, fields = _parse_protocol_fields(rest)
+    parts = [cmd]
+    parts.extend(labels)
+
+    phone_delta = _phone_rx_tx_delta_ms(fields)
+    if phone_delta is not None:
+        parts.append(f"phone={phone_delta:.1f} ms")
+
+    stop_begin_ms = _field_float(fields, "phone_stop_begin_ms")
+    stop_marked_ms = _field_float(fields, "phone_stop_marked_ms")
+    stop_mux_done_ms = _field_float(fields, "phone_stop_mux_done_ms")
+    requested_end_us = _field_float(fields, "requested_end_us")
+
+    if stop_begin_ms is not None:
+        marked_delta = None if stop_marked_ms is None else stop_marked_ms - stop_begin_ms
+        mux_delta = None if stop_mux_done_ms is None else stop_mux_done_ms - stop_begin_ms
+        requested_delta = None if requested_end_us is None else (requested_end_us / 1000.0) - stop_begin_ms
+        if marked_delta is not None:
+            parts.append(f"mark={_fmt_delta_ms(marked_delta)}")
+        if mux_delta is not None:
+            parts.append(f"mux={_fmt_delta_ms(mux_delta)}")
+        if requested_delta is not None:
+            parts.append(f"requested_end={_fmt_delta_ms(requested_delta)}")
+
+    if cmd == "PREPARE_OK":
+        preroll = fields.get("preroll_ms")
+        lead = fields.get("camera_lead_ms")
+        if preroll is not None:
+            parts.append(f"preroll={preroll} ms")
+        if lead is not None:
+            parts.append(f"lead={lead} ms")
+
+    return " ".join(part for part in parts if part)
+
+
+def _compact_resolution_text(profile: dict) -> str:
+    width = int(profile.get("width", 0) or 0)
+    height = int(profile.get("height", 0) or 0)
+    fps = profile.get("fps")
+    if fps is None:
+        return f"{width} x {height}"
+    fps_text = f"{float(fps):.2f}".rstrip("0").rstrip(".")
+    return f"{width} x {height} @ {fps_text} fps"
+
+
+def _format_client_line_for_log(line: str) -> str:
+    parts = str(line or "").split(" ", 1)
+    cmd = parts[0].upper() if parts else ""
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    if cmd in ("SETTINGS_LIST_OK", "SETTINGS_OK"):
+        try:
+            payload = json.loads(rest)
+            resolutions = payload.get("resolutions", [])
+            mode_keys = {
+                (
+                    int(option.get("width", 0) or 0),
+                    int(option.get("height", 0) or 0),
+                )
+                for option in resolutions
+            }
+            current = payload.get("current", {})
+            current_text = _compact_resolution_text(current) if current else "unknown"
+            position = payload.get("position")
+            position_text = f" position={position}" if position else ""
+            return (
+                f"{cmd} current={current_text} "
+                f"modes={len(mode_keys)} options={len(resolutions)}{position_text}"
+            )
+        except Exception:
+            return f"{cmd} {_truncate_log_text(rest)}".rstrip()
+
+    if cmd == "LIST_OK":
+        try:
+            payload = json.loads(rest)
+            captures = payload.get("captures", [])
+            file_count = sum(len(capture.get("files", [])) for capture in captures)
+            names = [
+                _truncate_log_text(str(capture.get("name", "")), 48)
+                for capture in captures[:2]
+            ]
+            names_text = f" first={', '.join(name for name in names if name)}" if names else ""
+            if len(captures) > 2:
+                names_text += f" +{len(captures) - 2} more"
+            return f"LIST_OK captures={len(captures)} files={file_count}{names_text}"
+        except Exception:
+            return f"{cmd} {_truncate_log_text(rest)}".rstrip()
+
+    if cmd == "LIVE_PREVIEW_STATE":
+        try:
+            payload = json.loads(rest)
+            active = bool(payload.get("active"))
+            message = payload.get("message") or ("streaming" if active else "stopped")
+            host = payload.get("host")
+            port = payload.get("port")
+            target = f" {host}:{port}" if host and port else ""
+            error = f" error={payload.get('error')}" if payload.get("error") else ""
+            return f"LIVE_PREVIEW_STATE {message}{target}{error}"
+        except Exception:
+            return f"{cmd} {_truncate_log_text(rest)}".rstrip()
+
+    if cmd in ("STOP_MARKED", "STOP_OK", "READY", "READY_ERR", "PREPARE_OK"):
+        return _format_phone_lifecycle_for_log(cmd, rest)
+
+    formatted = _format_protocol_timing_for_log(line)
+    return _truncate_log_text(formatted)
+
+
+def _split_protocol_payload_and_fields(text: str) -> Tuple[str, str]:
+    payload = []
+    fields = []
+    for token in str(text or "").split():
+        if "=" in token:
+            fields.append(token)
+        else:
+            payload.append(token)
+    return " ".join(payload), " ".join(fields)
+
+
+@dataclass
+class HubLagTestSession:
+    label: str
+    client_key: str
+    client_addr: str
+    client_name: str
+    display: LagTimingDisplay
+    duration_s: float
+    display_started_perf: float
+    actual_start_command_elapsed_ms: Optional[float] = None
+    actual_stop_command_elapsed_ms: Optional[float] = None
+    start_command_elapsed_ms: Optional[float] = None
+    stop_command_elapsed_ms: Optional[float] = None
+    start_ack_elapsed_ms: Optional[float] = None
+    stop_marked_elapsed_ms: Optional[float] = None
+    stop_ok_elapsed_ms: Optional[float] = None
+    stop_ack_elapsed_ms: Optional[float] = None
+    ready_elapsed_ms: Optional[float] = None
+    capture_name: Optional[str] = None
+    capture_info: Optional[dict] = None
+    poll_attempts: int = 0
+    transfer_requested: bool = False
+    transfer_lookup_started: bool = False
+    analysis_started: bool = False
+    camera_setup_requested: bool = False
+    camera_setup_applied: bool = False
+    prepare_requested: bool = False
+    prepared: bool = False
 
 
 PHONE_STREAM_IMPORT_ERROR = ""
@@ -889,9 +1138,14 @@ class TcpServer:
         self.message_callback = message_callback
         self.transfer_progress_callback = transfer_progress_callback
         self.save_dir_getter = save_dir_getter
+        self._running = True
 
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        exclusive_addr_use = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if exclusive_addr_use is not None:
+            self.server_sock.setsockopt(socket.SOL_SOCKET, exclusive_addr_use, 1)
+        else:
+            self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_sock.bind((self.host, self.port))
         self.server_sock.listen()
         self.log(f"TCP server listening on {self.host}:{self.port}")
@@ -909,8 +1163,11 @@ class TcpServer:
         threading.Thread(target=self.accept_loop, daemon=True).start()
 
     def accept_loop(self):
-        while True:
-            conn, addr = self.server_sock.accept()
+        while self._running:
+            try:
+                conn, addr = self.server_sock.accept()
+            except OSError:
+                break
             self._configure_keepalive(conn)
             conn.settimeout(CLIENT_SOCKET_TIMEOUT_SEC)
             self.log(f"Client connected: {addr}")
@@ -1032,7 +1289,7 @@ class TcpServer:
 
     def handle_line(self, client, line: str):
         addr = client["addr"]
-        self.log(f"From {addr}: {line}")
+        self.log(f"From {addr}: {_format_client_line_for_log(line)}")
 
         parts = line.split(" ", 1)
         cmd = parts[0].upper()
@@ -1042,10 +1299,13 @@ class TcpServer:
             client["name"] = rest or None
             self._notify_clients_changed()
         elif cmd in ("NAME_OK", "NAMEOK", "NAME-OK"):
-            ack_name = rest or client.get("last_name_sent")
+            ack_payload, ack_fields = _split_protocol_payload_and_fields(rest)
+            ack_name = ack_payload or client.get("last_name_sent")
             client["last_name_ok"] = ack_name or None
             if ack_name:
-                self.log(f"{addr} confirmed name: {ack_name}")
+                details = _format_protocol_timing_for_log(ack_fields)
+                detail_text = f" ({details})" if details else ""
+                self.log(f"{addr} confirmed name: {ack_name}{detail_text}")
             else:
                 self.log(f"{addr} sent NAME_OK without a name (no last name sent)")
         elif cmd == "FILE_BEGIN":
@@ -1072,7 +1332,8 @@ class TcpServer:
             abs_path = None
             fh = None
             try:
-                abs_path = resolve_safe_transfer_path(save_dir, rel_path)
+                storage_rel_path = lag_test_storage_relative_path(rel_path)
+                abs_path = resolve_safe_transfer_path(save_dir, storage_rel_path)
                 os.makedirs(os.path.dirname(abs_path), exist_ok=True)
                 fh = open(abs_path, "wb")
             except ValueError as e:
@@ -1270,6 +1531,30 @@ class TcpServer:
 
         return send_count
 
+    def close(self):
+        self._running = False
+        try:
+            self.server_sock.close()
+        except Exception:
+            pass
+
+        with self.lock:
+            clients = list(self.clients)
+            self.clients.clear()
+
+        for client in clients:
+            self._close_open_file(client)
+            conn = client.get("conn")
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._stop_client_sender(client)
+
+        if clients:
+            self._notify_clients_changed()
+
 
 # -----------------------------------
 # UDP discovery responder
@@ -1399,11 +1684,21 @@ class App:
         self.camera_desired_profile = saved_camera_profile
         self.active_capture_name = None
         self.last_completed_capture_name = None
+        self._pending_capture_completion_name = None
+        self._pending_capture_client_keys = set()
+        self._pending_capture_stop_ok_keys = set()
+        self._pending_capture_preview_keys = set()
+        self._pending_capture_ready_keys = set()
+        self._pending_capture_finalize_after_ids = []
         self.phone_selector_labels = []
         self.delete_unlock_states = {}
         self.delete_unlock_buttons = {}
         self.delete_action_buttons = {}
         self.phone_stream_pane = None
+        self._lag_test_session = None
+        self.tcp = None
+        self.discovery = None
+        self.phone_connection_enabled = False
 
         # Main 3-column layout: controls and logs on the left, shared settings in the
         # middle, and selected-phone controls on the right.
@@ -1433,11 +1728,67 @@ class App:
         clients_frame = tk.Frame(left_frame)
         clients_frame.grid(row=1, column=0, sticky="ew", pady=(0, 4))
 
-        tk.Label(clients_frame, text="Connected phones:").pack(anchor="w")
+        clients_header_frame = tk.Frame(clients_frame)
+        clients_header_frame.pack(fill=tk.X)
+        tk.Label(clients_header_frame, text="Connected phones:").pack(side=tk.LEFT, anchor="w")
+
+        self.phone_disconnect_btn = tk.Button(
+            clients_header_frame,
+            text="Disconnect",
+            width=10,
+            command=self.toggle_phone_connection,
+        )
+        self.phone_disconnect_btn.pack(side=tk.RIGHT, padx=(4, 0))
+
+        tk.Label(clients_header_frame, text="ms").pack(side=tk.RIGHT, padx=(2, 6))
+        initial_lead_ms = self._normalize_phone_start_lead_ms(
+            self.app_state.get("phone_start_lead_ms", 0.0),
+            persist=False,
+        )
+        self.phone_start_lead_ms_var = tk.StringVar(
+            value=compact_float_text(initial_lead_ms, precision=1)
+        )
+        self.phone_start_lead_ms_entry = tk.Entry(
+            clients_header_frame,
+            width=5,
+            textvariable=self.phone_start_lead_ms_var,
+        )
+        self.phone_start_lead_ms_entry.pack(side=tk.RIGHT)
+        self.phone_start_lead_ms_entry.bind(
+            "<FocusOut>",
+            lambda _event: self._normalize_phone_start_lead_ms(
+                self.phone_start_lead_ms_var.get()
+            ),
+        )
+        self.phone_start_lead_ms_entry.bind(
+            "<Return>",
+            lambda _event: (
+                self._normalize_phone_start_lead_ms(self.phone_start_lead_ms_var.get()),
+                "break",
+            )[-1],
+        )
+        tk.Label(clients_header_frame, text="Lead:").pack(side=tk.RIGHT, padx=(6, 2))
+
+        self.lag_test_btn = tk.Button(
+            clients_header_frame,
+            text="Lag Test",
+            width=8,
+            command=self.on_lag_test,
+        )
+        self.lag_test_btn.pack(side=tk.RIGHT)
 
         self.clients_list = tk.Listbox(clients_frame, height=4)
         self.clients_list.pack(fill=tk.X)
         self.clients_list.bind("<<ListboxSelect>>", self.on_client_selected)
+
+        self.lag_test_status_var = tk.StringVar(value="Lag test idle")
+        self.lag_test_status_label = tk.Label(
+            clients_frame,
+            textvariable=self.lag_test_status_var,
+            anchor="w",
+            justify=tk.LEFT,
+        )
+        self.lag_test_status_label.pack(fill=tk.X, pady=(2, 0))
 
         # Info label
         info_frame = tk.Frame(left_frame)
@@ -1801,21 +2152,8 @@ class App:
             self.delete_all_btn,
         )
 
-        # TCP + Arduino
-        self.tcp = TcpServer(
-            host=SERVER_HOST,
-            port=SERVER_PORT,
-            log_callback=self.log,
-            clients_changed_callback=self.on_clients_changed,
-            message_callback=self.on_client_message,
-            transfer_progress_callback=self.on_transfer_progress,
-            save_dir_getter=self.get_save_dir,
-        )
-        self.discovery = UdpDiscoveryResponder(
-            listen_port=DISCOVERY_UDP_PORT,
-            reply_tcp_port=SERVER_PORT,
-            log_callback=self.log,
-        )
+        # TCP/UDP phone connection + Arduino
+        self.connect_phone_network(log_success=False)
         self.arduino = ArduinoController(self.log, command_callback=self.on_arduino_serial_command)
 
         self.update_start_stop_buttons()
@@ -2025,7 +2363,14 @@ class App:
 
     def _name_keepalive_tick(self):
         self._name_keepalive_after_id = None
-        if not hasattr(self, "tcp"):
+        if self.tcp is None:
+            self.schedule_name_keepalive()
+            return
+        if self._lag_test_session is not None:
+            self.schedule_name_keepalive()
+            return
+        if self._pending_capture_completion_name is not None:
+            self.schedule_name_keepalive()
             return
 
         generated = self.build_generated_name(strict=True, log_errors=False)
@@ -2191,7 +2536,7 @@ class App:
         self.generated_name_var.set(generated if generated else "")
 
     def broadcast_generated_name_on_change(self):
-        if not hasattr(self, "tcp"):
+        if self.tcp is None:
             return
         generated = self.build_generated_name(strict=True, log_errors=False)
         if generated is None:
@@ -2270,10 +2615,30 @@ class App:
         self.transfer_in_progress = self.has_active_transfer()
         disabled = self.transfer_in_progress
         camera_block_reason = self.get_camera_start_block_reason()
-        start_disabled = self.is_running or disabled or self.serial_arm_enabled or camera_block_reason is not None
+        capture_finalizing = self._pending_capture_completion_name is not None
+        start_disabled = (
+            self.tcp is None
+            or self.is_running
+            or capture_finalizing
+            or disabled
+            or self.serial_arm_enabled
+            or camera_block_reason is not None
+        )
         self.start_btn.configure(state=tk.DISABLED if start_disabled else tk.NORMAL)
-        self.stop_btn.configure(state=tk.NORMAL if self.is_running and not disabled else tk.DISABLED)
+        self.stop_btn.configure(
+            state=tk.NORMAL if self.tcp is not None and self.is_running and not disabled else tk.DISABLED
+        )
         self.arm_btn.configure(text="DISARM" if self.serial_arm_enabled else "ARM")
+        if hasattr(self, "lag_test_btn"):
+            lag_disabled = (
+                self.tcp is None
+                or self.is_running
+                or capture_finalizing
+                or disabled
+                or self._lag_test_session is not None
+                or not self.client_entries
+            )
+            self.lag_test_btn.configure(state=tk.DISABLED if lag_disabled else tk.NORMAL)
 
     # ------- camera settings helpers -------
 
@@ -2344,7 +2709,7 @@ class App:
                 }
         return supported
 
-    def format_camera_modes_summary(self, payload, max_resolutions: int = 8) -> str:
+    def format_camera_modes_summary(self, payload, max_resolutions: int = 4) -> str:
         grouped = {}
         for option in payload.get("resolutions", []):
             resolution_label = self.format_resolution_option(option)
@@ -3067,6 +3432,10 @@ class App:
                 for key, value in self.phone_stream_states_by_client.items()
                 if key in active_client_keys
             }
+            if self._pending_capture_completion_name is not None:
+                disconnected_keys = self._pending_capture_client_keys - active_client_keys
+                for key in list(disconnected_keys):
+                    self._mark_pending_capture_ready(key, "phone disconnected")
 
             self.phone_selector_combo.configure(
                 values=self.phone_selector_labels,
@@ -3095,6 +3464,98 @@ class App:
             self.root.after(0, update)
         except tk.TclError:
             pass
+
+    def connect_phone_network(self, log_success=True) -> bool:
+        if self.tcp is not None:
+            self.phone_connection_enabled = True
+            self.update_phone_connection_ui()
+            return True
+
+        tcp = None
+        discovery = None
+        try:
+            tcp = TcpServer(
+                host=SERVER_HOST,
+                port=SERVER_PORT,
+                log_callback=self.log,
+                clients_changed_callback=self.on_clients_changed,
+                message_callback=self.on_client_message,
+                transfer_progress_callback=self.on_transfer_progress,
+                save_dir_getter=self.get_save_dir,
+            )
+            discovery = UdpDiscoveryResponder(
+                listen_port=DISCOVERY_UDP_PORT,
+                reply_tcp_port=SERVER_PORT,
+                log_callback=self.log,
+            )
+        except Exception as exc:
+            try:
+                if tcp is not None:
+                    tcp.close()
+            except Exception:
+                pass
+            try:
+                if discovery is not None:
+                    discovery.close()
+            except Exception:
+                pass
+            self.tcp = None
+            self.discovery = None
+            self.phone_connection_enabled = False
+            self.update_phone_connection_ui(error_text=str(exc))
+            self.log(f"Phone connection could not start: {exc}")
+            return False
+
+        self.tcp = tcp
+        self.discovery = discovery
+        self.phone_connection_enabled = True
+        self.update_phone_connection_ui()
+        if log_success:
+            self.log("Phone connection enabled")
+        self.broadcast_generated_name_on_change()
+        return True
+
+    def disconnect_phone_network(self) -> bool:
+        if self.is_running:
+            self.log("Stop the active capture before disabling phone connection")
+            return False
+
+        if self._lag_test_session is not None:
+            self._finish_lag_test_error("Phone connection was disabled")
+
+        discovery = self.discovery
+        tcp = self.tcp
+        self.discovery = None
+        self.tcp = None
+        self.phone_connection_enabled = False
+
+        if discovery is not None:
+            discovery.close()
+        if tcp is not None:
+            tcp.close()
+
+        self.on_clients_changed([])
+        self.update_phone_connection_ui()
+        self.log("Phone connection disabled")
+        return True
+
+    def toggle_phone_connection(self):
+        if self.tcp is None:
+            self.connect_phone_network()
+        else:
+            self.disconnect_phone_network()
+
+    def update_phone_connection_ui(self, error_text: str = ""):
+        if hasattr(self, "phone_disconnect_btn"):
+            self.phone_disconnect_btn.configure(text="Disconnect" if self.tcp is not None else "Connect")
+        if hasattr(self, "info_label"):
+            if self.tcp is not None:
+                self.info_label.configure(text=f"Server: {SERVER_HOST}:{SERVER_PORT}")
+            elif error_text:
+                self.info_label.configure(text=f"Phone connection off: {error_text}")
+            else:
+                self.info_label.configure(text="Phone connection off")
+        self.update_start_stop_buttons()
 
     def on_client_selected(self, _event=None):
         if self._syncing_client_selection:
@@ -3185,8 +3646,18 @@ class App:
             if cmd in ("TRANSFER_DONE", "TRANSFER_ALL_DONE"):
                 self.schedule_capture_list_refresh(client, delay_ms=500)
             self.update_transfer_sync_status()
-        elif cmd in ("START_OK", "STOP_OK", "BUSY", "ERR_UNKNOWN"):
-            self.log(line)
+        elif cmd in (
+            "START_OK",
+            "STOP_MARKED",
+            "STOP_OK",
+            "READY",
+            "READY_ERR",
+            "PREPARE_OK",
+            "PREPARE_ERR",
+            "BUSY",
+            "ERR_UNKNOWN",
+        ):
+            self.notify_capture_lifecycle_message(client, cmd, rest)
             if client == self.selected_client and cmd == "BUSY":
                 reason = rest or "UNKNOWN"
                 self.show_transfer_status(f"Phone busy: {reason}")
@@ -3212,6 +3683,8 @@ class App:
                 self.phone_stream_pane.set_stream_state(client["key"], state_message)
         else:
             self.log(f"Client msg: {line}")
+
+        self.notify_lag_test_client_message(client, cmd, rest, line)
 
     def on_transfer_progress(self, client):
         if not self._is_ui_thread():
@@ -3322,12 +3795,20 @@ class App:
         client_name = client.get("name") or client["addr"][0]
         return f"{position} - {client_name}" if position else client_name
 
+    @staticmethod
+    def capture_name_matches(requested_name: Optional[str], actual_name: Optional[str]) -> bool:
+        requested = str(requested_name or "").strip()
+        actual = str(actual_name or "").strip()
+        if not requested or not actual:
+            return False
+        return actual == requested or actual.startswith(f"{requested}_")
+
     def get_capture_by_name(self, client, capture_name: Optional[str]) -> Optional[dict]:
         if not client or not capture_name:
             return None
         captures = self.captures_by_client.get(client["key"], [])
         for capture in captures:
-            if capture.get("name") == capture_name:
+            if self.capture_name_matches(capture_name, capture.get("name")):
                 return capture
         return None
 
@@ -3343,10 +3824,30 @@ class App:
             return False
         rel_path = client.get("current_file_rel") or client.get("pending_file_done_rel") or ""
         normalized = rel_path.replace("\\", "/")
-        return normalized.startswith(f"{capture_name}/")
+        return normalized.startswith(f"{capture_name}/") or normalized.startswith(f"{capture_name}_")
 
     def update_transfer_sync_status(self):
         capture_name = self.last_completed_capture_name
+        pending_name = self._pending_capture_completion_name
+        if pending_name:
+            self.transfer_sync_status_var.set(f"Finishing '{pending_name}'")
+            if not self.client_entries:
+                detail = "No phone connected"
+            else:
+                waiting_stop_ok = self._pending_capture_client_keys - self._pending_capture_stop_ok_keys
+                waiting_preview = self._pending_capture_stop_ok_keys - self._pending_capture_preview_keys
+                waiting_rearm = self._pending_capture_preview_keys - self._pending_capture_ready_keys
+                if waiting_stop_ok:
+                    detail = f"Waiting for {len(waiting_stop_ok)} phone(s) to finish MP4 muxing..."
+                elif waiting_preview:
+                    detail = f"Waiting for {len(waiting_preview)} phone(s) to restore preview..."
+                elif waiting_rearm:
+                    detail = f"Waiting for {len(waiting_rearm)} phone(s) to arm the recorder..."
+                else:
+                    detail = "Refreshing capture lists..."
+            self.transfer_sync_details_var.set(detail)
+            return
+
         if not self.client_entries:
             if capture_name:
                 self.transfer_sync_status_var.set(
@@ -3415,9 +3916,11 @@ class App:
     def transfer_capture_from_client(self, client, capture_name: str) -> bool:
         if not client or not capture_name:
             return False
-        self.tcp.send_to_client(client, f"GET {capture_name}")
+        capture = self.get_capture_by_name(client, capture_name)
+        request_name = capture.get("name") if capture else capture_name
+        self.tcp.send_to_client(client, f"GET {request_name}")
         self.transfer_error_by_client.pop(client["key"], None)
-        self.log(f"Sent to {client['addr'][0]}: GET {capture_name}")
+        self.log(f"Sent to {client['addr'][0]}: GET {request_name}")
         return True
 
     def send_delete_to_client(self, client, command: str, deleted_name: str):
@@ -3465,8 +3968,10 @@ class App:
 
         sent_count = 0
         for client in self.client_entries:
-            if self.get_capture_by_name(client, capture_name):
-                self.send_delete_to_client(client, f"DELETE {capture_name}", capture_name)
+            capture = self.get_capture_by_name(client, capture_name)
+            if capture:
+                actual_name = capture.get("name") or capture_name
+                self.send_delete_to_client(client, f"DELETE {actual_name}", actual_name)
                 sent_count += 1
 
         if not sent_count:
@@ -3639,6 +4144,171 @@ class App:
         for client in list(self.client_entries):
             self.schedule_capture_list_refresh(client, delay_ms=delay_ms)
 
+    def _clear_pending_capture_finalize_timers(self):
+        for after_id in self._pending_capture_finalize_after_ids:
+            try:
+                self.root.after_cancel(after_id)
+            except tk.TclError:
+                pass
+        self._pending_capture_finalize_after_ids = []
+
+    def _schedule_pending_capture_timeout(self, delay_ms: int, callback: Callable):
+        try:
+            after_id = self.root.after(delay_ms, callback)
+        except tk.TclError:
+            return
+        self._pending_capture_finalize_after_ids.append(after_id)
+
+    def _capture_client_label_by_key(self, client_key: str) -> str:
+        for client in self.client_entries:
+            if client.get("key") == client_key:
+                return self.get_transfer_client_label(client)
+        return client_key
+
+    def _begin_pending_capture_completion(self, capture_name: Optional[str]):
+        self._clear_pending_capture_finalize_timers()
+        self._pending_capture_completion_name = capture_name
+        self._pending_capture_client_keys = {client["key"] for client in self.client_entries}
+        self._pending_capture_stop_ok_keys = set()
+        self._pending_capture_preview_keys = set()
+        self._pending_capture_ready_keys = set()
+
+        if not capture_name:
+            self._finalize_pending_capture_completion()
+            return
+        if not self._pending_capture_client_keys:
+            self.log(f"Capture '{capture_name}' stopped; no connected phones to wait for")
+            self._finalize_pending_capture_completion()
+            return
+
+        self.log(
+            f"Capture '{capture_name}' stopped; waiting for phone STOP_OK and READY"
+        )
+        for client_key in list(self._pending_capture_client_keys):
+            self._schedule_pending_capture_timeout(
+                CAPTURE_STOP_OK_TIMEOUT_MS,
+                lambda key=client_key: self._on_pending_capture_stop_ok_timeout(key),
+            )
+        self.update_transfer_sync_status()
+        self.update_start_stop_buttons()
+
+    def _on_pending_capture_stop_ok_timeout(self, client_key: str):
+        if self._pending_capture_completion_name is None:
+            return
+        if client_key not in self._pending_capture_client_keys:
+            return
+        if client_key in self._pending_capture_stop_ok_keys:
+            return
+        label = self._capture_client_label_by_key(client_key)
+        self.log(f"Capture STOP_OK not received from {label}; refreshing anyway")
+        self._mark_pending_capture_ready(client_key, "STOP_OK timeout")
+
+    def _on_pending_capture_ready_timeout(self, client_key: str):
+        if self._pending_capture_completion_name is None:
+            return
+        if client_key not in self._pending_capture_client_keys:
+            return
+        if client_key in self._pending_capture_ready_keys:
+            return
+        label = self._capture_client_label_by_key(client_key)
+        if client_key in self._pending_capture_preview_keys:
+            self.log(f"Capture PREPARE_OK READY not received from {label}; refreshing anyway")
+        else:
+            self.log(f"Capture READY not received from {label}; refreshing anyway")
+        self._mark_pending_capture_ready(client_key, "READY timeout")
+
+    def _mark_pending_capture_ready(self, client_key: str, reason: str = ""):
+        if self._pending_capture_completion_name is None:
+            return
+        if client_key not in self._pending_capture_client_keys:
+            return
+        self._pending_capture_ready_keys.add(client_key)
+        if reason:
+            self.transfer_error_by_client.pop(client_key, None)
+        self.update_transfer_sync_status()
+        self._maybe_finalize_pending_capture()
+
+    def _maybe_finalize_pending_capture(self):
+        if self._pending_capture_completion_name is None:
+            return
+        if self._pending_capture_client_keys <= self._pending_capture_ready_keys:
+            self._finalize_pending_capture_completion()
+
+    def _finalize_pending_capture_completion(self):
+        capture_name = self._pending_capture_completion_name
+        self._clear_pending_capture_finalize_timers()
+        self._pending_capture_completion_name = None
+        self._pending_capture_client_keys = set()
+        self._pending_capture_stop_ok_keys = set()
+        self._pending_capture_preview_keys = set()
+        self._pending_capture_ready_keys = set()
+
+        if capture_name:
+            self.last_completed_capture_name = capture_name
+            for client in self.client_entries:
+                self.captures_by_client.pop(client["key"], None)
+            self.invalidate_local_file_match_cache()
+            self.schedule_all_capture_list_refresh(delay_ms=250)
+            self.log(f"Capture '{capture_name}' ready for transfer lookup")
+        self.update_transfer_sync_status()
+        self.increment_auto_increment_fields()
+        self.update_start_stop_buttons()
+
+    def notify_capture_lifecycle_message(self, client, cmd: str, rest: str):
+        if self._lag_test_session is not None:
+            return
+        capture_name = self._pending_capture_completion_name
+        if capture_name is None:
+            return
+        client_key = client.get("key")
+        if client_key not in self._pending_capture_client_keys:
+            return
+
+        label = self.get_transfer_client_label(client)
+        if cmd == "STOP_OK":
+            if client_key not in self._pending_capture_stop_ok_keys:
+                self._pending_capture_stop_ok_keys.add(client_key)
+                self.log(f"Capture STOP_OK from {label}; waiting for READY")
+            self.update_transfer_sync_status()
+            self._schedule_pending_capture_timeout(
+                CAPTURE_READY_TIMEOUT_MS,
+                lambda key=client_key: self._on_pending_capture_ready_timeout(key),
+            )
+        elif cmd == "READY":
+            self.log(f"Capture READY from {label}: {rest or 'PREVIEW'}")
+            self._pending_capture_stop_ok_keys.add(client_key)
+            self._pending_capture_preview_keys.add(client_key)
+            self.update_transfer_sync_status()
+            self._schedule_pending_capture_timeout(
+                CAPTURE_READY_TIMEOUT_MS,
+                lambda key=client_key: self._on_pending_capture_ready_timeout(key),
+            )
+        elif cmd == "READY_ERR":
+            self.log(f"Capture READY_ERR from {label}: {rest or 'unknown'}")
+            self._pending_capture_stop_ok_keys.add(client_key)
+            self._pending_capture_preview_keys.add(client_key)
+            self._mark_pending_capture_ready(client_key)
+        elif cmd == "PREPARE_OK":
+            labels, _fields = _parse_protocol_fields(rest)
+            if "READY" not in [item.upper() for item in labels]:
+                return
+            self.log(
+                f"Capture PREPARE_OK from {label}: "
+                f"{_format_phone_lifecycle_for_log(cmd, rest or 'READY')}"
+            )
+            self._pending_capture_stop_ok_keys.add(client_key)
+            self._pending_capture_preview_keys.add(client_key)
+            self._mark_pending_capture_ready(client_key)
+        elif cmd == "PREPARE_ERR":
+            self.log(f"Capture PREPARE_ERR from {label}: {rest or 'unknown'}")
+            self._pending_capture_stop_ok_keys.add(client_key)
+            self._pending_capture_preview_keys.add(client_key)
+            self._mark_pending_capture_ready(client_key)
+        elif cmd == "BUSY":
+            self.log(f"Capture busy response from {label}: {rest or 'UNKNOWN'}")
+        elif cmd == "ERR_UNKNOWN":
+            self.log(f"Capture protocol issue from {label}: {rest or 'ERR_UNKNOWN'}")
+
     def cancel_delete_watchdog(self):
         if self._delete_watchdog_after_id is not None:
             self.root.after_cancel(self._delete_watchdog_after_id)
@@ -3715,10 +4385,537 @@ class App:
         self.start_delete_watchdog(client, "DELETE_ALL")
         self.update_transfer_sync_status()
 
+    # ------- lag test -------
+
+    def on_lag_test(self):
+        if self._lag_test_session is not None:
+            self.log("Lag test already running")
+            return
+        if self.tcp is None:
+            self.log("Phone connection is off")
+            return
+        client = self.selected_client
+        if not client:
+            self.log("Select one connected phone before running Lag Test")
+            return
+        if self.is_running:
+            self.log("Stop the active capture before running Lag Test")
+            return
+        if self.has_active_transfer():
+            self.log("Wait for the active transfer before running Lag Test")
+            return
+
+        label = "lagtest_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        display = LagTimingDisplay(self.root, left_fraction=0.5)
+        session = HubLagTestSession(
+            label=label,
+            client_key=client["key"],
+            client_addr=f"{client['addr'][0]}:{client['addr'][1]}",
+            client_name=client.get("name") or client["addr"][0],
+            display=display,
+            duration_s=LAG_TEST_DURATION_S,
+            display_started_perf=0.0,
+        )
+        self._lag_test_session = session
+        self.update_start_stop_buttons()
+        self._set_lag_test_status(f"Preparing Full HD high-FPS mode for {label}")
+        self._lag_test_prepare_camera_mode()
+
+    def get_phone_start_lead_ms(self) -> float:
+        if hasattr(self, "phone_start_lead_ms_var"):
+            return self._normalize_phone_start_lead_ms(self.phone_start_lead_ms_var.get())
+        return self._normalize_phone_start_lead_ms(
+            self.app_state.get("phone_start_lead_ms", 0.0),
+            persist=False,
+        )
+
+    def _normalize_phone_start_lead_ms(self, raw, persist: bool = True) -> float:
+        try:
+            value = float(str(raw).strip())
+        except Exception:
+            value = 0.0
+        value = max(0.0, min(value, 5000.0))
+        if hasattr(self, "phone_start_lead_ms_var"):
+            self.phone_start_lead_ms_var.set(compact_float_text(value, precision=1))
+        if persist:
+            self.app_state["phone_start_lead_ms"] = value
+            try:
+                save_app_state(self.app_state)
+            except Exception as exc:
+                self.log(f"Could not save camera lead setting: {exc}")
+        return value
+
+    def _lag_test_full_hd_profile(self, payload: dict) -> Optional[dict]:
+        options = [
+            option for option in payload.get("resolutions", [])
+            if int(option.get("width", 0) or 0) == 1920
+            and int(option.get("height", 0) or 0) == 1080
+        ]
+        if not options:
+            return None
+        option = max(
+            options,
+            key=lambda item: (
+                float(item.get("fps", 0.0) or 0.0),
+                bool(item.get("highSpeed")),
+            ),
+        )
+        current = payload.get("current", {})
+        fps = float(option.get("fps", 0.0) or 0.0)
+        return {
+            "width": 1920,
+            "height": 1080,
+            "fps": fps,
+            "iso": float(current.get("iso") or self.camera_defaults["iso"]),
+            "shutterSeconds": float(
+                current.get("shutterSeconds")
+                or default_shutter_seconds_for_fps(
+                    fps,
+                    self.camera_defaults["shutter_fps_multiplier"],
+                )
+            ),
+        }
+
+    def _lag_test_prepare_camera_mode(self):
+        session = self._lag_test_session
+        client = self._lag_test_client()
+        if session is None or client is None or self.tcp is None:
+            return
+        payload = self.camera_settings_by_client.get(client["key"])
+        if not payload:
+            session.camera_setup_requested = True
+            self.tcp.send_to_client(client, "SETTINGS_LIST")
+            self.log(f"Lag test requested camera modes from {session.client_name}")
+            self.root.after(
+                LAG_TEST_PREPARE_TIMEOUT_MS,
+                lambda key=session.client_key: self._lag_test_prepare_timeout(key),
+            )
+            return
+
+        profile = self._lag_test_full_hd_profile(payload)
+        if profile is None:
+            self._finish_lag_test_error("Phone does not report 1920x1080 camera mode for lag test")
+            return
+
+        current_profile = self.build_camera_profile_from_current(payload)
+        if self.camera_profiles_match(current_profile, profile):
+            session.camera_setup_applied = True
+            self._lag_test_send_label_prepare()
+            return
+
+        session.camera_setup_requested = True
+        payload_text = json.dumps(profile, separators=(",", ":"))
+        self.tcp.send_to_client(client, f"SETTINGS {payload_text}")
+        self.log(
+            "Lag test camera mode requested for "
+            f"{session.client_name}: 1920x1080 @ {profile['fps']:.2f} fps"
+        )
+        self.root.after(
+            LAG_TEST_PREPARE_TIMEOUT_MS,
+            lambda key=session.client_key: self._lag_test_prepare_timeout(key),
+        )
+
+    def _lag_test_send_label_prepare(self):
+        session = self._lag_test_session
+        client = self._lag_test_client()
+        if session is None or client is None or self.tcp is None:
+            return
+        if session.prepare_requested:
+            return
+        self._set_lag_test_status(f"Preparing phone recorder for {session.label}")
+        self.tcp.send_to_client(client, f"NAME {session.label}")
+        session.prepare_requested = True
+        prepare_payload = json.dumps(
+            {
+                "prerollMs": LAG_TEST_PHONE_PREROLL_MS,
+                "cameraLeadMs": self.get_phone_start_lead_ms(),
+            },
+            separators=(",", ":"),
+        )
+        self.tcp.send_to_client(client, f"PREPARE {prepare_payload}")
+        self.log(f"Lag test label/prep sent to {session.client_name}: {session.label}")
+        self.root.after(
+            LAG_TEST_PREPARE_TIMEOUT_MS,
+            lambda key=session.client_key: self._lag_test_prepare_timeout(key),
+        )
+
+    def _lag_test_delay_until_ms(self, session: HubLagTestSession, target_ms: float) -> int:
+        return max(0, int(round(float(target_ms) - session.display.elapsed_ms())))
+
+    def _lag_test_start_countdown(self, client_key: str):
+        session = self._lag_test_session
+        if session is None or session.client_key != client_key:
+            return
+        if session.display.window is not None:
+            return
+        try:
+            session.display.show()
+        except Exception as exc:
+            self._finish_lag_test_error(f"Lag test display could not open: {exc}")
+            return
+        session.display_started_perf = session.display.start_perf or time.perf_counter()
+        session.display.set_phase("ARMED")
+        self._set_lag_test_status("Phone prepared; START scheduled at 1000 ms")
+        self.root.after(
+            self._lag_test_delay_until_ms(session, LAG_TEST_START_TARGET_MS),
+            lambda key=session.client_key: self._lag_test_send_start(key),
+        )
+
+    def _lag_test_prepare_timeout(self, client_key: str):
+        session = self._lag_test_session
+        if session is None or session.client_key != client_key or session.prepared:
+            return
+        if not session.prepare_requested:
+            self._finish_lag_test_error("Phone did not confirm lag-test camera setup before countdown")
+        else:
+            self._finish_lag_test_error("Phone did not confirm PREPARE_OK before lag-test countdown")
+
+    def _lag_test_send_start(self, client_key: str):
+        session = self._lag_test_session
+        client = self._lag_test_client()
+        if session is None or client is None or session.client_key != client_key or self.tcp is None:
+            return
+        session.display.set_phase("START")
+        session.actual_start_command_elapsed_ms = session.display.elapsed_ms()
+        session.start_command_elapsed_ms = LAG_TEST_START_TARGET_MS
+        self.tcp.send_to_client(client, "START")
+        self._set_lag_test_status("START target 1000 ms; recording timing target")
+        self.log(
+            "Lag test START sent to "
+            f"{session.client_name} at {session.actual_start_command_elapsed_ms:.1f} ms "
+            f"(target {session.start_command_elapsed_ms:.0f} ms)"
+        )
+        self.root.after(
+            self._lag_test_delay_until_ms(session, LAG_TEST_STOP_TARGET_MS),
+            lambda key=session.client_key: self._lag_test_send_stop(key),
+        )
+
+    def _lag_test_send_stop(self, client_key: str):
+        session = self._lag_test_session
+        client = self._lag_test_client()
+        if session is None or client is None or session.client_key != client_key or self.tcp is None:
+            return
+        session.display.set_phase("STOP")
+        session.actual_stop_command_elapsed_ms = session.display.elapsed_ms()
+        session.stop_command_elapsed_ms = LAG_TEST_STOP_TARGET_MS
+        self.tcp.send_to_client(client, "STOP")
+        self._set_lag_test_status("STOP target 2000 ms; holding target for late frames")
+        self.log(
+            "Lag test STOP sent to "
+            f"{session.client_name} at {session.actual_stop_command_elapsed_ms:.1f} ms "
+            f"(target {session.stop_command_elapsed_ms:.0f} ms)"
+        )
+        self.root.after(
+            LAG_TEST_STOP_MARKED_TIMEOUT_MS,
+            lambda key=session.client_key: self._lag_test_stop_marked_timeout(key),
+        )
+
+    def _lag_test_stop_marked_timeout(self, client_key: str):
+        session = self._lag_test_session
+        if (
+            session is None
+            or session.client_key != client_key
+            or session.stop_marked_elapsed_ms is not None
+            or session.stop_ok_elapsed_ms is not None
+        ):
+            return
+        self._finish_lag_test_error("Phone did not confirm STOP_MARKED after STOP")
+
+    def _lag_test_stop_ok_timeout(self, client_key: str):
+        session = self._lag_test_session
+        if session is None or session.client_key != client_key or session.stop_ok_elapsed_ms is not None:
+            return
+        self._finish_lag_test_error("Phone marked STOP but did not send STOP_OK after muxing")
+
+    def _lag_test_begin_transfer_lookup(self, client_key: str):
+        session = self._lag_test_session
+        if session is None or session.client_key != client_key:
+            return
+        if session.transfer_lookup_started:
+            return
+        session.transfer_lookup_started = True
+        session.display.set_phase("TRANSFER")
+        session.display.close()
+        self._set_lag_test_status("Looking for phone capture")
+        self._lag_test_find_capture()
+
+    def _lag_test_ready_timeout(self, client_key: str):
+        session = self._lag_test_session
+        if (
+            session is None
+            or session.client_key != client_key
+            or session.ready_elapsed_ms is not None
+            or session.transfer_lookup_started
+        ):
+            return
+        self.log("Lag test READY was not received after STOP_OK; continuing with transfer lookup")
+        self._lag_test_begin_transfer_lookup(client_key)
+
+    def _lag_test_find_capture(self):
+        session = self._lag_test_session
+        client = self._lag_test_client()
+        if session is None or client is None:
+            return
+
+        captures = self.captures_by_client.get(client["key"], [])
+        candidates = [
+            capture for capture in captures
+            if str(capture.get("name", "")).startswith(session.label)
+        ]
+        if candidates:
+            candidates.sort(key=lambda item: str(item.get("name", "")), reverse=True)
+            capture = candidates[0]
+            session.capture_info = capture
+            session.capture_name = capture.get("name")
+            if not session.capture_name:
+                self._finish_lag_test_error("Lag test capture had no name")
+                return
+            self.last_completed_capture_name = session.capture_name
+            self._set_lag_test_status(f"Transferring {session.capture_name}")
+            session.transfer_requested = True
+            if self.transfer_capture_from_client(client, session.capture_name):
+                self.update_transfer_sync_status()
+            else:
+                self._finish_lag_test_error("Could not request lag-test transfer")
+            return
+
+        session.poll_attempts += 1
+        if session.poll_attempts > 18:
+            self._finish_lag_test_error(f"No phone capture starting with '{session.label}' appeared")
+            return
+        self.request_capture_list(client=client, log_request=False)
+        self.root.after(750, self._lag_test_find_capture)
+
+    def notify_lag_test_client_message(self, client, cmd: str, rest: str, line: str):
+        del line
+        session = self._lag_test_session
+        if session is None or client.get("key") != session.client_key:
+            return
+
+        now_elapsed = session.display.elapsed_ms()
+        if cmd in ("SETTINGS_LIST_OK", "SETTINGS_OK") and session.camera_setup_requested and not session.prepare_requested:
+            session.camera_setup_applied = cmd == "SETTINGS_OK"
+            self._lag_test_prepare_camera_mode()
+        elif cmd == "SETTINGS_ERR" and session.camera_setup_requested and not session.prepare_requested:
+            self._finish_lag_test_error(f"Phone camera setup failed: {rest or 'unknown'}")
+        elif cmd == "PREPARE_OK" and not session.prepared:
+            session.prepared = True
+            self.log(
+                f"Lag test PREPARE_OK from {session.client_name}: "
+                f"{_format_phone_lifecycle_for_log(cmd, rest or 'READY')}"
+            )
+            self._lag_test_start_countdown(session.client_key)
+        elif cmd == "PREPARE_ERR":
+            self._finish_lag_test_error(f"Phone prepare failed: {rest or 'unknown'}")
+        elif cmd == "START_OK" and session.start_ack_elapsed_ms is None:
+            session.start_ack_elapsed_ms = now_elapsed
+            self.log(f"Lag test START_OK at {now_elapsed:.1f} ms")
+        elif cmd == "STOP_MARKED" and session.stop_marked_elapsed_ms is None:
+            session.stop_marked_elapsed_ms = now_elapsed
+            session.stop_ack_elapsed_ms = now_elapsed
+            self._set_lag_test_status("STOP marked; waiting for muxed MP4")
+            self.log(f"Lag test STOP_MARKED at {now_elapsed:.1f} ms; waiting for muxed MP4")
+            self.root.after(
+                LAG_TEST_STOP_OK_TIMEOUT_MS,
+                lambda key=session.client_key: self._lag_test_stop_ok_timeout(key),
+            )
+        elif cmd == "STOP_OK" and session.stop_ok_elapsed_ms is None:
+            session.stop_ok_elapsed_ms = now_elapsed
+            if session.stop_marked_elapsed_ms is None:
+                session.stop_marked_elapsed_ms = now_elapsed
+                session.stop_ack_elapsed_ms = now_elapsed
+                self.log("Lag test STOP_OK used as fallback stop timing because STOP_MARKED was not received")
+            self._set_lag_test_status("MP4 muxed; waiting for READY")
+            self.log(f"Lag test STOP_OK at {now_elapsed:.1f} ms; MP4 muxed, waiting for READY")
+            self.root.after(
+                LAG_TEST_READY_TIMEOUT_MS,
+                lambda key=session.client_key: self._lag_test_ready_timeout(key),
+            )
+        elif cmd == "READY":
+            session.ready_elapsed_ms = now_elapsed
+            self.log(f"Lag test READY at {now_elapsed:.1f} ms: {rest or 'PREVIEW'}")
+            self.root.after(250, lambda key=session.client_key: self._lag_test_begin_transfer_lookup(key))
+        elif cmd == "READY_ERR":
+            session.ready_elapsed_ms = now_elapsed
+            self._set_lag_test_status(f"Ready issue after lag test: {rest or 'unknown'}")
+            self.log(f"Lag test READY_ERR at {now_elapsed:.1f} ms: {rest or 'unknown'}")
+            self.root.after(250, lambda key=session.client_key: self._lag_test_begin_transfer_lookup(key))
+        elif cmd == "STOP_ERR":
+            self._finish_lag_test_error(f"Phone stop failed: {rest or 'unknown'}")
+        elif cmd == "BUSY":
+            self._finish_lag_test_error(f"Phone busy during lag test: {rest or 'UNKNOWN'}")
+        elif cmd == "TRANSFER_ERR":
+            self._finish_lag_test_error(f"Lag test transfer failed: {rest or 'unknown'}")
+        elif cmd == "TRANSFER_DONE" and session.capture_name:
+            finished_name = rest.split(" ", 1)[0] if rest else ""
+            if finished_name == session.capture_name:
+                self.root.after(300, self._lag_test_start_analysis)
+
+    def _lag_test_start_analysis(self):
+        session = self._lag_test_session
+        if session is None or session.analysis_started:
+            return
+        session.analysis_started = True
+        session.display.set_phase("ANALYZING")
+        self._set_lag_test_status("Analyzing transferred video")
+
+        video_path = self._lag_test_local_video_path(session)
+        if not video_path:
+            self._finish_lag_test_error("Transferred lag-test MP4 was not found locally")
+            return
+
+        timing = LagTiming(
+            label=session.label,
+            display_started_perf=session.display_started_perf,
+            start_command_elapsed_ms=float(session.start_command_elapsed_ms or 0.0),
+            stop_command_elapsed_ms=float(session.stop_command_elapsed_ms or 0.0),
+            start_ack_elapsed_ms=session.start_ack_elapsed_ms,
+            stop_ack_elapsed_ms=session.stop_ack_elapsed_ms,
+        )
+
+        def worker():
+            analysis = analyze_lag_video(video_path, timing)
+            report_paths = {}
+            try:
+                report_base = os.path.splitext(video_path)[0] + "_lag_report"
+                report_paths = write_lag_report(
+                    report_base,
+                    timing,
+                    analysis,
+                    extra={
+                        "client": session.client_name,
+                        "client_addr": session.client_addr,
+                        "capture_name": session.capture_name,
+                        "intended_start_ms": LAG_TEST_START_TARGET_MS,
+                        "intended_stop_ms": LAG_TEST_STOP_TARGET_MS,
+                        "actual_start_command_elapsed_ms": session.actual_start_command_elapsed_ms,
+                        "actual_stop_command_elapsed_ms": session.actual_stop_command_elapsed_ms,
+                        "stop_marked_elapsed_ms": session.stop_marked_elapsed_ms,
+                        "stop_ok_elapsed_ms": session.stop_ok_elapsed_ms,
+                        "ready_elapsed_ms": session.ready_elapsed_ms,
+                    },
+                )
+            except Exception as exc:
+                analysis.error = (
+                    f"{analysis.error}; report write failed: {exc}"
+                    if analysis.error
+                    else f"Report write failed: {exc}"
+                )
+            try:
+                self.root.after(0, lambda: self._finish_lag_test_analysis(analysis, report_paths))
+            except tk.TclError:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_lag_test_analysis(self, analysis, report_paths: dict):
+        session = self._lag_test_session
+        if session is None:
+            return
+        if analysis.error:
+            self.log(f"Lag test analysis issue: {analysis.error}")
+            status = (
+                f"Endpoint decode not clean | "
+                f"first clean={analysis.first_frame_clean} | "
+                f"last clean={analysis.last_frame_clean}"
+            )
+        else:
+            status = (
+                f"First {analysis.first_frame_elapsed_ms} ms -> {analysis.start_lag_ms:+.1f} ms | "
+                f"Last {analysis.last_frame_elapsed_ms} ms -> {analysis.stop_lag_ms:+.1f} ms | "
+                f"confidence {analysis.confidence:.2f}"
+            )
+        self._set_lag_test_status(status)
+        self.log(
+            "Lag test result: "
+            f"first={analysis.first_frame_elapsed_ms} ms vs 1000 ms ({self._fmt_ms(analysis.start_lag_ms)}), "
+            f"last={analysis.last_frame_elapsed_ms} ms vs 2000 ms ({self._fmt_ms(analysis.stop_lag_ms)}), "
+            f"START_OK={self._fmt_ms(analysis.start_ack_latency_ms)}, "
+            f"STOP_MARKED={self._fmt_ms(analysis.stop_ack_latency_ms)}, "
+            f"STOP_OK={self._fmt_ms(None if session.stop_ok_elapsed_ms is None else session.stop_ok_elapsed_ms - (session.stop_command_elapsed_ms or 0.0))}, "
+            f"endpoint_decoded={analysis.decoded_frame_count}/2, "
+            f"first_clean={analysis.first_frame_clean}, "
+            f"last_clean={analysis.last_frame_clean}, "
+            f"fps={analysis.fps:.2f}, confidence={analysis.confidence:.2f}"
+        )
+        if analysis.first_frame_image_path:
+            self.log(f"Lag test first frame: {analysis.first_frame_image_path}")
+        if analysis.last_frame_image_path:
+            self.log(f"Lag test last frame: {analysis.last_frame_image_path}")
+        if report_paths:
+            self.log(f"Lag test report: {report_paths.get('json', '')}")
+        session.display.set_phase("DONE")
+        session.display.close()
+        self._lag_test_session = None
+        self.update_start_stop_buttons()
+
+    def _lag_test_local_video_path(self, session: HubLagTestSession) -> Optional[str]:
+        capture_name = session.capture_name
+        capture = session.capture_info or {}
+        if not capture_name:
+            return None
+        save_dir = self.get_save_dir()
+        for file_info in capture.get("files", []):
+            file_name = str(file_info.get("name", ""))
+            if not file_name.lower().endswith(".mp4"):
+                continue
+            try:
+                rel_path = lag_test_storage_relative_path(f"{capture_name}/{file_name}")
+                path = resolve_safe_transfer_path(save_dir, rel_path)
+            except ValueError:
+                continue
+            if os.path.isfile(path):
+                return path
+        capture_dirs = [
+            os.path.join(save_dir, LAG_TEST_TRANSFER_ROOT, capture_name),
+            os.path.join(save_dir, capture_name),
+        ]
+        for capture_dir in capture_dirs:
+            if not os.path.isdir(capture_dir):
+                continue
+            for name in os.listdir(capture_dir):
+                if name.lower().endswith(".mp4"):
+                    return os.path.join(capture_dir, name)
+        return None
+
+    def _lag_test_client(self):
+        session = self._lag_test_session
+        if session is None:
+            return None
+        for client in self.client_entries:
+            if client.get("key") == session.client_key:
+                return client
+        self._finish_lag_test_error("Lag test phone disconnected")
+        return None
+
+    def _finish_lag_test_error(self, message: str):
+        session = self._lag_test_session
+        if session is not None:
+            session.display.set_phase("ERROR")
+            session.display.close()
+        self._lag_test_session = None
+        self._set_lag_test_status(f"Error: {message}")
+        self.log(f"Lag test stopped: {message}")
+        self.update_start_stop_buttons()
+
+    def _set_lag_test_status(self, text: str):
+        if hasattr(self, "lag_test_status_var"):
+            self.lag_test_status_var.set(text)
+
+    @staticmethod
+    def _fmt_ms(value: Optional[float]) -> str:
+        return "n/a" if value is None else f"{value:.1f} ms"
+
     # ------- button callbacks -------
 
     def start_capture(self, trigger_source="UI", send_to_arduino=True):
+        if self.tcp is None:
+            self.log(f"Phone connection is off; START blocked ({trigger_source})")
+            return False
         if self.is_running:
+            return False
+        if self._pending_capture_completion_name is not None:
+            self.log(f"Capture is still finishing; START blocked ({trigger_source})")
             return False
         self.flush_pending_naming_update()
         self.transfer_in_progress = self.has_active_transfer()
@@ -3742,6 +4939,9 @@ class App:
         return True
 
     def stop_capture(self, trigger_source="UI", send_to_arduino=True):
+        if self.tcp is None:
+            self.log(f"Phone connection is off; STOP blocked ({trigger_source})")
+            return False
         if not self.is_running:
             return False
         self.transfer_in_progress = self.has_active_transfer()
@@ -3755,14 +4955,9 @@ class App:
         completed_capture_name = self.active_capture_name or self.build_generated_name(
             strict=False, log_errors=False
         )
-        if completed_capture_name:
-            self.last_completed_capture_name = completed_capture_name
         self.active_capture_name = None
         self.is_running = False
-        self.update_start_stop_buttons()
-        self.schedule_all_capture_list_refresh(delay_ms=500)
-        self.update_transfer_sync_status()
-        self.increment_auto_increment_fields()
+        self._begin_pending_capture_completion(completed_capture_name)
         return True
 
     def on_arduino_serial_command(self, command: str):
@@ -3812,12 +5007,19 @@ class App:
             self.root.after_cancel(self._save_dir_update_after_id)
             self._save_dir_update_after_id = None
         self.cancel_delete_watchdog()
+        if self._lag_test_session is not None:
+            self._finish_lag_test_error("Application closed")
+        self._clear_pending_capture_finalize_timers()
         if self.phone_stream_pane is not None:
             pane = self.phone_stream_pane
             self.phone_stream_pane = None
             pane.close()
-        if hasattr(self, "discovery"):
+        if self.discovery is not None:
             self.discovery.close()
+            self.discovery = None
+        if self.tcp is not None:
+            self.tcp.close()
+            self.tcp = None
         self.arduino.close()
         self.root.destroy()
 

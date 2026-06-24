@@ -21,12 +21,10 @@ and can bridge external trigger systems through Arduino._
 ## Companion Android App
 
 CaptureBridge Hub is designed to work with the CaptureBridge Android phone
-client. For normal lab use, the portable Hub release includes a ready-to-install
-Android APK; the phone app source lives in
+client. For normal lab use, download the Android APK from the
+[latest CaptureBridge Android release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest).
+The phone app source lives in
 [USTP-Biomechanics/CaptureBridge-Android](https://github.com/USTP-Biomechanics/CaptureBridge-Android).
-The Android repository also publishes a debug APK from its tag build workflow
-for reproducible review/development builds, but that debug APK is not the
-official install APK for normal lab use.
 
 Important network note: the PC and phones usually need to be on the same
 private Wi-Fi or LAN, Windows should use the Private network profile, and
@@ -37,17 +35,20 @@ phone streaming UDP port `6101`.
 
 For normal use, download the portable release ZIP from the
 [latest GitHub release](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/latest),
-extract it, install the included Android APK on the phone, and start the
-Windows app with the BAT file. That is the easiest path and does not require
-Python or internet access on the lab PC.
+extract it, download and install the Android APK from the
+[latest CaptureBridge Android release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest),
+and start the Windows app with the BAT file. That is the easiest path and does
+not require Python or internet access on the lab PC.
 
 ### Recommended Portable Release
 
 1. Download `CaptureBridge_Hub_Minimal_Offline.zip` from the
    [latest GitHub release](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/latest).
 2. Extract the ZIP to a normal folder, for example `Documents` or `Desktop`.
-3. Copy `app-release.apk` from the extracted folder to the Android phone.
-4. Install `app-release.apk` on the phone. If Android asks, allow installing
+3. Download the Android APK from the
+   [latest CaptureBridge Android release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest)
+   and copy it to the phone if needed.
+4. Install the downloaded APK on the phone. If Android asks, allow installing
    this APK from the file manager or browser you are using.
 5. Put the PC and phone on the same private Wi-Fi or LAN.
 6. On the PC, double-click `Run_CaptureBridge_Hub.bat` in the extracted folder.
@@ -58,8 +59,10 @@ Python or internet access on the lab PC.
 11. Press `START`, then `STOP`.
 12. Transfer the current capture or all captures from the hub.
 
-The portable release includes the Windows app, its Python runtime, the Android
-APK, and the Arduino/Vicon bridge files. No separate Python install is needed.
+The portable Hub release includes the Windows app, its Python runtime, and the
+Arduino/Vicon bridge files. The Android APK is published separately in the
+[latest CaptureBridge Android release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest).
+No separate Python install is needed.
 
 ### Repo Run For Development
 
@@ -92,8 +95,10 @@ The red labels in the screenshot mark the main operator areas:
   be changed in [app_config.json](app_config.json).
 - **C**: Session controls. `START` and `STOP` control all connected phones.
   `ARM` listens for Arduino or Vicon trigger input when the bridge is connected.
-  If the phones are not in silent mode, each phone plays a tone when capture
-  starts and stops. See [Arduino Bridge](#arduino-bridge) and
+  `Lag Test` measures phone start/stop timing with a fullscreen visual timing
+  target, and `Disconnect` turns off phone networking when needed. If the
+  phones are not in silent mode, each phone plays a tone when capture starts
+  and stops. See [Lag Test](#lag-test), [Arduino Bridge](#arduino-bridge), and
   [Vicon Nexus Integration](#vicon-nexus-integration).
 - **D**: Global transfer and delete actions for all phones. Transfers are saved
   to the selected folder. Delete actions must be unlocked before the delete
@@ -165,14 +170,17 @@ For a lab PC that should not need Python or internet access:
 
 1. Download and extract `CaptureBridge_Hub_Minimal_Offline.zip` from the
    [latest GitHub release](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/latest).
-2. Install the included `app-release.apk` on the Android phone.
+2. Install the Android APK from the
+   [latest CaptureBridge Android release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest)
+   on the Android phone.
 3. Put the PC and phone on the same private Wi-Fi or LAN.
 4. Double-click `Run_CaptureBridge_Hub.bat` inside the extracted folder.
 5. Allow Windows firewall access on Private networks if prompted.
 
 The offline package includes the app, portable CPython with Tkinter, `pyserial`,
-`Pillow`, the Arduino bridge files, and the Android client
-APK. A compatible iOS client can also be used, but it is not included in this
+`Pillow`, and the Arduino bridge files. The Android client APK is published in
+the [latest CaptureBridge Android release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest).
+A compatible iOS client can also be used, but it is not included in this
 portable package.
 
 ### Normal Repo Run
@@ -194,6 +202,7 @@ submission compatibility.
 
 - [src/tcp_arduino_sync.py](src/tcp_arduino_sync.py): desktop app
 - [src/phone_stream.py](src/phone_stream.py): raw UDP phone preview receiver and Tk preview UI
+- [src/lag_test/](src/lag_test/): timing target, video analyzer, and report writer for lag tests
 - [app_config.json](app_config.json): save path, naming fields, and stream settings
 - [requirements.txt](requirements.txt): Python dependencies for repo runs
 - [Run_CaptureBridge_Hub.bat](Run_CaptureBridge_Hub.bat): normal launcher
@@ -209,6 +218,8 @@ submission compatibility.
 - Global `START` and `STOP` broadcast
 - Shared camera settings for resolution, FPS, ISO, and shutter
 - Start is guarded until connected phones report the shared camera profile
+- Selected-phone lag test for measuring start/stop latency from a recorded
+  visual timing target
 - Per-phone capture lists and transfer controls
 - Global transfer for the current capture or all captures
 - Unlock-guarded delete actions for one phone or all phones
@@ -253,6 +264,41 @@ Stream settings live under `phone_stream` in [app_config.json](app_config.json):
 8. Press `STOP`.
 9. Transfer the current capture or all captures.
 10. Use delete controls only after unlocking the relevant delete section.
+
+## Lag Test
+
+Select a phone in `Connected phones`, set the camera lead in milliseconds next
+to `Lag Test` if needed, and press `Lag Test` to measure capture start/stop
+latency for the specific phone, camera mode, lighting, network, and trigger
+setup in use. The hub prepares the selected phone, opens a fullscreen timing
+target, sends scheduled `START` and `STOP` commands, transfers the test video,
+and writes JSON/CSV lag reports next to the transferred MP4. Phone timing
+responses that include nanosecond fields are logged with a
+`phone_rx_tx_delta_ms` value so the phone-side receive-to-transmit time is
+readable in milliseconds.
+
+Use the measured offset to decide whether a camera lead is needed for your
+setup. The camera lead shifts the phone-side capture timing earlier by the
+configured number of milliseconds, which can compensate a repeatable start/stop
+delay when the same capture settings and workflow are used.
+
+For reliable analysis, aim the phone at the right side of the fullscreen timing
+target and make sure the complete green border is visible in the recorded video.
+If any side of the green border is cropped out, the analyzer may not be able to
+read the start/stop target cleanly.
+
+For compatible Android clients, `STOP_MARKED` is used as the stop timing
+acknowledgement because it is sent immediately after the phone marks the stop
+timestamp. `STOP_OK MEDIACODEC_MUXED` is then used as the file-ready signal
+before transfer lookup, and `READY PREVIEW` / `READY_ERR ...` describe whether
+the camera preview was restored after muxing.
+After `STOP_OK`, the Hub waits briefly for `READY` or `READY_ERR` so that
+preview rearm status is visible, then continues with transfer lookup even if no
+ready message arrives.
+
+In our test setup, this workflow measured about a 20 ms difference for both
+start and stop timing. Treat that as setup-specific validation rather than a
+formal synchronization guarantee.
 
 ## User Interface
 
@@ -389,16 +435,18 @@ dist/CaptureBridge_Hub_Minimal_Offline.zip
 The builder copies:
 
 - app source files
+- lag-test helper package
 - minimal app config
 - launcher BAT
 - package README
 - license and citation metadata
 - README image assets
-- Android client APK
 - [src/ArduinoBridge/](src/ArduinoBridge/)
 - portable Python runtime
 - `pyserial`
 - `Pillow`
+- `numpy`
+- `opencv-contrib-python`
 
 If a local `.venv` exists, the builder can use the Python installation behind
 that environment. Without `.venv`, it downloads the configured CPython installer
@@ -431,6 +479,7 @@ UDP discovery:
 Desktop to phone over TCP:
 
 - `NAME <generated_name>`
+- `PREPARE <json>` for lag-test recorder preparation
 - `START`
 - `STOP`
 - `LIST`
@@ -447,6 +496,8 @@ Phone to desktop over TCP:
 
 - `HELLO <device_name>`
 - `NAME_OK [generated_name]`
+- `PREPARE_OK [timing_fields]`
+- `PREPARE_ERR <reason>`
 - `LIST_OK <json>`
 - `FILE_BEGIN <relative_path> <size_bytes>`
 - `FILE_DONE <relative_path>`
@@ -461,7 +512,11 @@ Phone to desktop over TCP:
 - `DELETE_OK <capture_name|ALL>`
 - `DELETE_ERR <reason>`
 - `START_OK`
-- `STOP_OK`
+- `STOP_MARKED [timing_fields]`
+- `STOP_OK [status timing_fields]`
+- `STOP_ERR <reason>`
+- `READY PREVIEW`
+- `READY_ERR <reason>`
 - `BUSY <reason>`
 - `ERR_UNKNOWN`
 - `LIVE_PREVIEW_STATE <json|text>`
@@ -473,6 +528,20 @@ Payload notes:
 - File transfer uses `FILE_BEGIN`, raw bytes, then `FILE_DONE`.
 - `NAME_OK` may include the echoed generated name; if it does not, the Hub uses
   the last name it sent to that phone.
+- Timing fields ending in `_ns` are logged in a compact millisecond form when
+  possible; `phone_rx_ns` and `phone_tx_ns` are summarized as
+  `phone_rx_tx_delta_ms`.
+- Compatible Android clients send `STOP_MARKED` before muxing,
+  `STOP_OK MEDIACODEC_MUXED ...` after the MP4 is ready, and
+  `READY PREVIEW` / `READY_ERR ...` after camera preview restore. Newer
+  clients can then send `PREPARE_OK READY ...` once the recorder is armed again.
+- After a normal `STOP`, the Hub waits briefly for `STOP_OK` and `READY`
+  or `PREPARE_OK READY` before refreshing phone capture lists and advancing the
+  generated name.
+- In the Hub log, stop lifecycle messages are summarized as relative
+  millisecond deltas such as `mark=+16.0 ms` and `mux=+1203.0 ms`.
+- Phone capture folders may add timestamp suffixes to the generated name; the
+  Hub treats those as matches for current-capture transfer status and `GET`.
 - Camera settings payloads should include `resolutions`, `current`, and optionally `position`.
 - Preview start payload includes `host`, `port`, `maxFps`, `jpegQuality`, and `maxDimension`.
 
@@ -507,6 +576,7 @@ Fix:
 This is expected when:
 
 - a capture is already running
+- the previous capture is still muxing or rearming preview
 - a file transfer is in progress
 - the Arduino listener is armed
 - connected phones have not confirmed the shared camera profile
