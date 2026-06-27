@@ -8,7 +8,7 @@ ARUCO_MAX_ID = 999
 ARUCO_MARKER_BITS = 6
 ARUCO_BORDER_BITS = 1
 ARUCO_MODULES = ARUCO_MARKER_BITS + 2 * ARUCO_BORDER_BITS
-MARKER_STEP_MS = 20
+MARKER_STEP_MS = 5
 MAX_MARKER_MS = ARUCO_MAX_ID * MARKER_STEP_MS
 
 
@@ -45,3 +45,10 @@ def marker_matrix(marker_id: int) -> tuple[tuple[int, ...], ...]:
         borderBits=ARUCO_BORDER_BITS,
     )
     return tuple(tuple(1 if int(value) > 127 else 0 for value in row) for row in image)
+
+
+def prewarm_marker_matrices(max_marker_id: int = ARUCO_MAX_ID) -> None:
+    """Generate marker matrices before the visible lag clock starts."""
+    limit = max(0, min(ARUCO_MAX_ID, int(max_marker_id)))
+    for marker_id in range(limit + 1):
+        marker_matrix(marker_id)

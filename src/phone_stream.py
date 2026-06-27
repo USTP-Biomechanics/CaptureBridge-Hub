@@ -543,6 +543,7 @@ class PhoneStreamPane:
         self.stream_states: Dict[str, str] = {}
         self.panels: Dict[str, PhoneStreamPanel] = {}
         self.closed = False
+        self.display_suspended = False
         self._status_after_id = None
         self._last_status_log = 0.0
         self._last_unknown_source_log = 0.0
@@ -630,6 +631,12 @@ class PhoneStreamPane:
         panel = self.panels.get(client_key)
         if panel is not None:
             panel.set_stream_state(text)
+
+    def set_display_suspended(self, suspended: bool):
+        self.display_suspended = bool(suspended)
+        state = "Preview paused for lag test" if self.display_suspended else "Preview resumed"
+        for client_key in self._selected_client_keys():
+            self.set_stream_state(client_key, state)
 
     def _rebuild_clients_ui(self):
         for widget in self.clients_frame.winfo_children():
@@ -795,7 +802,7 @@ class PhoneStreamPane:
         self._status_after_id = self.frame.after(1000, self._poll_receiver_status)
 
     def _on_frame(self, source_ip: str, jpeg_bytes: bytes, meta: dict):
-        if self.closed:
+        if self.closed or self.display_suspended:
             return
         try:
             self.root.after(

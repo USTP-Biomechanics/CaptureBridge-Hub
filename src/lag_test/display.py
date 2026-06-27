@@ -1,10 +1,80 @@
 import time
 import tkinter as tk
+import sys
+from ctypes import Structure, WinDLL, byref, c_short, c_wchar, sizeof
+from ctypes.wintypes import DWORD, LONG, WORD
 
-from .marker_timecode import ARUCO_MODULES, MARKER_STEP_MS, encode_marker_time, marker_matrix
+from .marker_timecode import (
+    ARUCO_MAX_ID,
+    ARUCO_MODULES,
+    MARKER_STEP_MS,
+    encode_marker_time,
+    marker_matrix,
+    prewarm_marker_matrices,
+)
 
 
-DISPLAY_TICK_MS = MARKER_STEP_MS
+DEFAULT_REFRESH_HZ = 60.0
+MIN_REFRESH_HZ = 24.0
+MAX_REFRESH_HZ = 360.0
+
+
+class _PointL(Structure):
+    _fields_ = [
+        ("x", LONG),
+        ("y", LONG),
+    ]
+
+
+class _DevMode(Structure):
+    _fields_ = [
+        ("dmDeviceName", c_wchar * 32),
+        ("dmSpecVersion", WORD),
+        ("dmDriverVersion", WORD),
+        ("dmSize", WORD),
+        ("dmDriverExtra", WORD),
+        ("dmFields", DWORD),
+        ("dmPosition", _PointL),
+        ("dmDisplayOrientation", DWORD),
+        ("dmDisplayFixedOutput", DWORD),
+        ("dmColor", c_short),
+        ("dmDuplex", c_short),
+        ("dmYResolution", c_short),
+        ("dmTTOption", c_short),
+        ("dmCollate", c_short),
+        ("dmFormName", c_wchar * 32),
+        ("dmLogPixels", WORD),
+        ("dmBitsPerPel", DWORD),
+        ("dmPelsWidth", DWORD),
+        ("dmPelsHeight", DWORD),
+        ("dmDisplayFlags", DWORD),
+        ("dmDisplayFrequency", DWORD),
+        ("dmICMMethod", DWORD),
+        ("dmICMIntent", DWORD),
+        ("dmMediaType", DWORD),
+        ("dmDitherType", DWORD),
+        ("dmReserved1", DWORD),
+        ("dmReserved2", DWORD),
+        ("dmPanningWidth", DWORD),
+        ("dmPanningHeight", DWORD),
+    ]
+
+
+def _detect_display_refresh_hz() -> float:
+    if sys.platform != "win32":
+        return DEFAULT_REFRESH_HZ
+    try:
+        user32 = WinDLL("user32", use_last_error=True)
+        mode = _DevMode()
+        mode.dmSize = WORD(sizeof(_DevMode))
+        if not user32.EnumDisplaySettingsW(None, DWORD(-1).value, byref(mode)):
+            return DEFAULT_REFRESH_HZ
+        hz = float(mode.dmDisplayFrequency)
+        if hz < MIN_REFRESH_HZ or hz > MAX_REFRESH_HZ:
+            return DEFAULT_REFRESH_HZ
+        return hz
+    except Exception:
+        return DEFAULT_REFRESH_HZ
 
 
 class LagTimingDisplay:
@@ -22,11 +92,14 @@ class LagTimingDisplay:
         self._last_marker_id = None
         self._last_clock_text = None
         self._last_phase = None
+        self.refresh_hz = DEFAULT_REFRESH_HZ
+        self.tick_interval_ms = 1000.0 / DEFAULT_REFRESH_HZ
 
     def show(self):
         if self.window is not None:
             return
-        self.start_perf = time.perf_counter()
+        self.refresh_hz = _detect_display_refresh_hz()
+        self.tick_interval_ms = 1000.0 / self.refresh_hz
         try:
             screen_w = self.root.winfo_screenwidth()
             screen_h = self.root.winfo_screenheight()
@@ -60,6 +133,8 @@ class LagTimingDisplay:
 
         self.window = window
         self.canvas = canvas
+        prewarm_marker_matrices(ARUCO_MAX_ID)
+        self.start_perf = time.perf_counter()
         self._draw_static()
         self._tick()
 
@@ -230,6 +305,11 @@ class LagTimingDisplay:
             if self._phase != self._last_phase:
                 self.canvas.itemconfigure("phase", text=self._phase, fill=phase_color)
                 self._last_phase = self._phase
-            self._after_id = self.window.after(DISPLAY_TICK_MS, self._tick)
+            self._after_id = self.window.after(self._next_tick_delay_ms(), self._tick)
         except tk.TclError:
             self.close()
+
+    def _next_tick_delay_ms(self) -> int:
+        elapsed = self.elapsed_ms()
+        next_frame_ms = (int(elapsed // self.tick_interval_ms) + 1) * self.tick_interval_ms
+        return max(1, int(round(next_frame_ms - elapsed)))

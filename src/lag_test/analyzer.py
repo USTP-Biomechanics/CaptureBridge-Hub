@@ -53,6 +53,7 @@ TOTAL_BITS = len(SYNC_BITS) + TIME_BITS
 CLEAN_CONFIDENCE_THRESHOLD = 0.40
 CODE_ROWS = 3
 ENDPOINT_SEARCH_MAX_FRAMES = 90
+ENDPOINT_IMAGE_NEIGHBOR_FRAMES = 20
 
 
 def decode_timecode_from_frame(frame, expected_ms: Optional[float] = None) -> Optional[Tuple[int, float]]:
@@ -107,9 +108,6 @@ def analyze_lag_video(video_path: str, timing: LagTiming, sample_stride: int = 1
     last_index = max(0, total_frames - 1)
     last_frame = _read_frame_at(cap, last_index)
 
-    first_image_path = _write_endpoint_frame(video_path, "first", first_frame, cv2)
-    last_image_path = _write_endpoint_frame(video_path, "last", last_frame, cv2)
-
     first_endpoint = _decode_endpoint_with_prediction(
         cap=cap,
         endpoint="first",
@@ -128,6 +126,18 @@ def analyze_lag_video(video_path: str, timing: LagTiming, sample_stride: int = 1
         fps=fps,
         expected_endpoint_ms=timing.stop_command_elapsed_ms,
     )
+    first_image_path = _write_endpoint_frame(
+        video_path,
+        "first",
+        _endpoint_image_frame(cap, first_frame, first_endpoint, endpoint_index=0),
+        cv2,
+    )
+    last_image_path = _write_endpoint_frame(
+        video_path,
+        "last",
+        _endpoint_image_frame(cap, last_frame, last_endpoint, endpoint_index=last_index),
+        cv2,
+    )
     cap.release()
 
     first_ms = first_endpoint.elapsed_ms
@@ -144,17 +154,19 @@ def analyze_lag_video(video_path: str, timing: LagTiming, sample_stride: int = 1
     stop_lag_ms = None if last_ms is None else float(last_ms) - float(timing.stop_command_elapsed_ms)
 
     error_parts = []
-    if first_frame is None:
-        error_parts.append("Could not read first video frame")
-    elif not first_endpoint.decoded:
-        error_parts.append("First frame has no readable timecode")
+    if not first_endpoint.decoded:
+        if first_frame is None:
+            error_parts.append("Could not read first video frame")
+        else:
+            error_parts.append("First frame has no readable timecode")
     elif not first_clean:
         error_parts.append(f"First frame timecode confidence is low ({first_conf:.2f})")
 
-    if last_frame is None:
-        error_parts.append("Could not read last video frame")
-    elif not last_endpoint.decoded:
-        error_parts.append("Last frame has no readable timecode")
+    if not last_endpoint.decoded:
+        if last_frame is None:
+            error_parts.append("Could not read last video frame")
+        else:
+            error_parts.append("Last frame has no readable timecode")
     elif not last_clean:
         error_parts.append(f"Last frame timecode confidence is low ({last_conf:.2f})")
 
@@ -252,6 +264,19 @@ def _decode_endpoint_with_prediction(
         return _EndpointDecode(True, False, False, int(elapsed_ms), confidence, endpoint_index)
 
     return _EndpointDecode(False, False, False, None, None, None)
+
+
+def _endpoint_image_frame(cap, endpoint_frame, endpoint: _EndpointDecode, endpoint_index: int):
+    decoded_index = endpoint.decoded_frame_index
+    if (
+        endpoint.clean
+        and decoded_index is not None
+        and abs(int(decoded_index) - int(endpoint_index)) <= ENDPOINT_IMAGE_NEIGHBOR_FRAMES
+    ):
+        frame = _read_frame_at(cap, decoded_index)
+        if frame is not None:
+            return frame
+    return endpoint_frame
 
 
 def _read_frame_at(cap, frame_index: int):

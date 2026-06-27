@@ -28,6 +28,13 @@ def write_lag_report(
         fh.write("\n")
 
     row = {**asdict(timing), **asdict(analysis)}
+    command_timing = (extra or {}).get("command_timing")
+    if isinstance(command_timing, dict):
+        row.update({
+            f"command_timing_{key}": value
+            for key, value in command_timing.items()
+            if isinstance(value, (str, int, float, bool)) or value is None
+        })
     with open(csv_path, "w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=list(row.keys()))
         writer.writeheader()

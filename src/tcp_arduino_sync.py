@@ -47,6 +47,7 @@ LAG_TEST_STOP_MARKED_TIMEOUT_MS = 3000
 LAG_TEST_STOP_OK_TIMEOUT_MS = 20000
 LAG_TEST_READY_TIMEOUT_MS = 3000
 LAG_TEST_PHONE_PREROLL_MS = 1000
+LAG_TEST_COMMAND_TIMING_TOLERANCE_MS = 25.0
 LAG_TEST_TRANSFER_ROOT = "LagTests"
 CAPTURE_STOP_OK_TIMEOUT_MS = 20000
 CAPTURE_READY_TIMEOUT_MS = 3000
@@ -477,6 +478,8 @@ class HubLagTestSession:
     display: LagTimingDisplay
     duration_s: float
     display_started_perf: float
+    display_refresh_hz: Optional[float] = None
+    display_tick_interval_ms: Optional[float] = None
     actual_start_command_elapsed_ms: Optional[float] = None
     actual_stop_command_elapsed_ms: Optional[float] = None
     start_command_elapsed_ms: Optional[float] = None
@@ -488,6 +491,7 @@ class HubLagTestSession:
     ready_elapsed_ms: Optional[float] = None
     capture_name: Optional[str] = None
     capture_info: Optional[dict] = None
+    segment_metrics: Optional[dict] = None
     poll_attempts: int = 0
     transfer_requested: bool = False
     transfer_lookup_started: bool = False
@@ -496,6 +500,75 @@ class HubLagTestSession:
     camera_setup_applied: bool = False
     prepare_requested: bool = False
     prepared: bool = False
+
+
+def _build_lag_test_command_timing(extra: dict, analysis) -> dict:
+    segment = extra.get("segment") if isinstance(extra.get("segment"), dict) else {}
+    actual_start_ms = extra.get("actual_start_command_elapsed_ms")
+    actual_stop_ms = extra.get("actual_stop_command_elapsed_ms")
+    intended_start_ms = extra.get("intended_start_ms")
+    intended_stop_ms = extra.get("intended_stop_ms")
+    phone_rx_duration_us = segment.get("phone_rx_duration_us")
+
+    hub_send_duration_ms = None
+    if actual_start_ms is not None and actual_stop_ms is not None:
+        hub_send_duration_ms = float(actual_stop_ms) - float(actual_start_ms)
+
+    intended_duration_ms = None
+    if intended_start_ms is not None and intended_stop_ms is not None:
+        intended_duration_ms = float(intended_stop_ms) - float(intended_start_ms)
+
+    phone_rx_duration_ms = None
+    if phone_rx_duration_us is not None:
+        phone_rx_duration_ms = float(phone_rx_duration_us) / 1000.0
+
+    duration_error_vs_hub_ms = None
+    if phone_rx_duration_ms is not None and hub_send_duration_ms is not None:
+        duration_error_vs_hub_ms = phone_rx_duration_ms - hub_send_duration_ms
+
+    duration_error_vs_target_ms = None
+    if phone_rx_duration_ms is not None and intended_duration_ms is not None:
+        duration_error_vs_target_ms = phone_rx_duration_ms - intended_duration_ms
+
+    threshold_ms = LAG_TEST_COMMAND_TIMING_TOLERANCE_MS
+    late_kind = "ok"
+    late_message = ""
+    if duration_error_vs_hub_ms is not None and abs(duration_error_vs_hub_ms) > threshold_ms:
+        if duration_error_vs_hub_ms > 0:
+            late_kind = "stop_received_late"
+            late_message = (
+                f"STOP reached phone {duration_error_vs_hub_ms:.1f} ms late "
+                "relative to Hub START-to-STOP send duration"
+            )
+        else:
+            late_kind = "start_received_late"
+            late_message = (
+                f"START reached phone {-duration_error_vs_hub_ms:.1f} ms late "
+                "relative to Hub START-to-STOP send duration"
+            )
+    elif duration_error_vs_target_ms is not None and abs(duration_error_vs_target_ms) > threshold_ms:
+        late_kind = "command_duration_off_target"
+        late_message = (
+            f"phone START-to-STOP receive duration was {duration_error_vs_target_ms:+.1f} ms "
+            "from the lag-test target"
+        )
+
+    if not late_message:
+        late_message = "phone START-to-STOP receive duration matched Hub command timing"
+
+    return {
+        "late": late_kind != "ok",
+        "late_kind": late_kind,
+        "late_message": late_message,
+        "tolerance_ms": threshold_ms,
+        "intended_duration_ms": intended_duration_ms,
+        "hub_send_duration_ms": hub_send_duration_ms,
+        "phone_rx_duration_ms": phone_rx_duration_ms,
+        "duration_error_vs_hub_ms": duration_error_vs_hub_ms,
+        "duration_error_vs_target_ms": duration_error_vs_target_ms,
+        "start_lag_ms": getattr(analysis, "start_lag_ms", None),
+        "stop_lag_ms": getattr(analysis, "stop_lag_ms", None),
+    }
 
 
 PHONE_STREAM_IMPORT_ERROR = ""
@@ -4417,8 +4490,9 @@ class App:
             display_started_perf=0.0,
         )
         self._lag_test_session = session
+        self._set_phone_preview_suspended_for_lag_test(True)
         self.update_start_stop_buttons()
-        self._set_lag_test_status(f"Preparing Full HD high-FPS mode for {label}")
+        self._set_lag_test_status(f"Preparing selected camera mode for {label}")
         self._lag_test_prepare_camera_mode()
 
     def get_phone_start_lead_ms(self) -> float:
@@ -4445,30 +4519,20 @@ class App:
                 self.log(f"Could not save camera lead setting: {exc}")
         return value
 
-    def _lag_test_full_hd_profile(self, payload: dict) -> Optional[dict]:
-        options = [
-            option for option in payload.get("resolutions", [])
-            if int(option.get("width", 0) or 0) == 1920
-            and int(option.get("height", 0) or 0) == 1080
-        ]
-        if not options:
+    def _lag_test_current_camera_profile(self, payload: dict) -> Optional[dict]:
+        profile = self.build_camera_profile_from_current(payload)
+        if profile is None:
             return None
-        option = max(
-            options,
-            key=lambda item: (
-                float(item.get("fps", 0.0) or 0.0),
-                bool(item.get("highSpeed")),
-            ),
-        )
-        current = payload.get("current", {})
-        fps = float(option.get("fps", 0.0) or 0.0)
+        fps = float(profile.get("fps") or 0.0)
+        if fps <= 0.0:
+            fps = float(self.camera_defaults.get("fps") or 60.0)
         return {
-            "width": 1920,
-            "height": 1080,
+            "width": int(profile["width"]),
+            "height": int(profile["height"]),
             "fps": fps,
-            "iso": float(current.get("iso") or self.camera_defaults["iso"]),
+            "iso": float(profile.get("iso") or self.camera_defaults["iso"]),
             "shutterSeconds": float(
-                current.get("shutterSeconds")
+                profile.get("shutterSeconds")
                 or default_shutter_seconds_for_fps(
                     fps,
                     self.camera_defaults["shutter_fps_multiplier"],
@@ -4488,13 +4552,13 @@ class App:
             self.log(f"Lag test requested camera modes from {session.client_name}")
             self.root.after(
                 LAG_TEST_PREPARE_TIMEOUT_MS,
-                lambda key=session.client_key: self._lag_test_prepare_timeout(key),
+                lambda key=session.client_key, label=session.label: self._lag_test_prepare_timeout(key, label),
             )
             return
 
-        profile = self._lag_test_full_hd_profile(payload)
+        profile = self._lag_test_current_camera_profile(payload)
         if profile is None:
-            self._finish_lag_test_error("Phone does not report 1920x1080 camera mode for lag test")
+            self._finish_lag_test_error("Phone did not report a current camera mode for lag test")
             return
 
         current_profile = self.build_camera_profile_from_current(payload)
@@ -4508,11 +4572,11 @@ class App:
         self.tcp.send_to_client(client, f"SETTINGS {payload_text}")
         self.log(
             "Lag test camera mode requested for "
-            f"{session.client_name}: 1920x1080 @ {profile['fps']:.2f} fps"
+            f"{session.client_name}: {profile['width']}x{profile['height']} @ {profile['fps']:.2f} fps"
         )
         self.root.after(
             LAG_TEST_PREPARE_TIMEOUT_MS,
-            lambda key=session.client_key: self._lag_test_prepare_timeout(key),
+            lambda key=session.client_key, label=session.label: self._lag_test_prepare_timeout(key, label),
         )
 
     def _lag_test_send_label_prepare(self):
@@ -4536,7 +4600,7 @@ class App:
         self.log(f"Lag test label/prep sent to {session.client_name}: {session.label}")
         self.root.after(
             LAG_TEST_PREPARE_TIMEOUT_MS,
-            lambda key=session.client_key: self._lag_test_prepare_timeout(key),
+            lambda key=session.client_key, label=session.label: self._lag_test_prepare_timeout(key, label),
         )
 
     def _lag_test_delay_until_ms(self, session: HubLagTestSession, target_ms: float) -> int:
@@ -4554,26 +4618,34 @@ class App:
             self._finish_lag_test_error(f"Lag test display could not open: {exc}")
             return
         session.display_started_perf = session.display.start_perf or time.perf_counter()
+        session.display_refresh_hz = getattr(session.display, "refresh_hz", None)
+        session.display_tick_interval_ms = getattr(session.display, "tick_interval_ms", None)
         session.display.set_phase("ARMED")
         self._set_lag_test_status("Phone prepared; START scheduled at 1000 ms")
+        if session.display_refresh_hz and session.display_tick_interval_ms:
+            self.log(
+                "Lag test display refresh: "
+                f"{session.display_refresh_hz:.2f} Hz "
+                f"({session.display_tick_interval_ms:.2f} ms frame target)"
+            )
         self.root.after(
             self._lag_test_delay_until_ms(session, LAG_TEST_START_TARGET_MS),
-            lambda key=session.client_key: self._lag_test_send_start(key),
+            lambda key=session.client_key, label=session.label: self._lag_test_send_start(key, label),
         )
 
-    def _lag_test_prepare_timeout(self, client_key: str):
+    def _lag_test_prepare_timeout(self, client_key: str, label: str):
         session = self._lag_test_session
-        if session is None or session.client_key != client_key or session.prepared:
+        if not self._lag_test_session_matches(client_key, label) or session is None or session.prepared:
             return
         if not session.prepare_requested:
             self._finish_lag_test_error("Phone did not confirm lag-test camera setup before countdown")
         else:
             self._finish_lag_test_error("Phone did not confirm PREPARE_OK before lag-test countdown")
 
-    def _lag_test_send_start(self, client_key: str):
+    def _lag_test_send_start(self, client_key: str, label: str):
         session = self._lag_test_session
         client = self._lag_test_client()
-        if session is None or client is None or session.client_key != client_key or self.tcp is None:
+        if not self._lag_test_session_matches(client_key, label) or session is None or client is None or self.tcp is None:
             return
         session.display.set_phase("START")
         session.actual_start_command_elapsed_ms = session.display.elapsed_ms()
@@ -4587,13 +4659,13 @@ class App:
         )
         self.root.after(
             self._lag_test_delay_until_ms(session, LAG_TEST_STOP_TARGET_MS),
-            lambda key=session.client_key: self._lag_test_send_stop(key),
+            lambda key=session.client_key, label=session.label: self._lag_test_send_stop(key, label),
         )
 
-    def _lag_test_send_stop(self, client_key: str):
+    def _lag_test_send_stop(self, client_key: str, label: str):
         session = self._lag_test_session
         client = self._lag_test_client()
-        if session is None or client is None or session.client_key != client_key or self.tcp is None:
+        if not self._lag_test_session_matches(client_key, label) or session is None or client is None or self.tcp is None:
             return
         session.display.set_phase("STOP")
         session.actual_stop_command_elapsed_ms = session.display.elapsed_ms()
@@ -4607,29 +4679,29 @@ class App:
         )
         self.root.after(
             LAG_TEST_STOP_MARKED_TIMEOUT_MS,
-            lambda key=session.client_key: self._lag_test_stop_marked_timeout(key),
+            lambda key=session.client_key, label=session.label: self._lag_test_stop_marked_timeout(key, label),
         )
 
-    def _lag_test_stop_marked_timeout(self, client_key: str):
+    def _lag_test_stop_marked_timeout(self, client_key: str, label: str):
         session = self._lag_test_session
         if (
-            session is None
-            or session.client_key != client_key
+            not self._lag_test_session_matches(client_key, label)
+            or session is None
             or session.stop_marked_elapsed_ms is not None
             or session.stop_ok_elapsed_ms is not None
         ):
             return
         self._finish_lag_test_error("Phone did not confirm STOP_MARKED after STOP")
 
-    def _lag_test_stop_ok_timeout(self, client_key: str):
+    def _lag_test_stop_ok_timeout(self, client_key: str, label: str):
         session = self._lag_test_session
-        if session is None or session.client_key != client_key or session.stop_ok_elapsed_ms is not None:
+        if not self._lag_test_session_matches(client_key, label) or session is None or session.stop_ok_elapsed_ms is not None:
             return
         self._finish_lag_test_error("Phone marked STOP but did not send STOP_OK after muxing")
 
-    def _lag_test_begin_transfer_lookup(self, client_key: str):
+    def _lag_test_begin_transfer_lookup(self, client_key: str, label: str):
         session = self._lag_test_session
-        if session is None or session.client_key != client_key:
+        if not self._lag_test_session_matches(client_key, label) or session is None:
             return
         if session.transfer_lookup_started:
             return
@@ -4637,22 +4709,24 @@ class App:
         session.display.set_phase("TRANSFER")
         session.display.close()
         self._set_lag_test_status("Looking for phone capture")
-        self._lag_test_find_capture()
+        self._lag_test_find_capture(client_key, label)
 
-    def _lag_test_ready_timeout(self, client_key: str):
+    def _lag_test_ready_timeout(self, client_key: str, label: str):
         session = self._lag_test_session
         if (
-            session is None
-            or session.client_key != client_key
+            not self._lag_test_session_matches(client_key, label)
+            or session is None
             or session.ready_elapsed_ms is not None
             or session.transfer_lookup_started
         ):
             return
         self.log("Lag test READY was not received after STOP_OK; continuing with transfer lookup")
-        self._lag_test_begin_transfer_lookup(client_key)
+        self._lag_test_begin_transfer_lookup(client_key, label)
 
-    def _lag_test_find_capture(self):
+    def _lag_test_find_capture(self, client_key: Optional[str] = None, label: Optional[str] = None):
         session = self._lag_test_session
+        if client_key is not None and label is not None and not self._lag_test_session_matches(client_key, label):
+            return
         client = self._lag_test_client()
         if session is None or client is None:
             return
@@ -4684,7 +4758,10 @@ class App:
             self._finish_lag_test_error(f"No phone capture starting with '{session.label}' appeared")
             return
         self.request_capture_list(client=client, log_request=False)
-        self.root.after(750, self._lag_test_find_capture)
+        self.root.after(
+            750,
+            lambda key=session.client_key, label=session.label: self._lag_test_find_capture(key, label),
+        )
 
     def notify_lag_test_client_message(self, client, cmd: str, rest: str, line: str):
         del line
@@ -4717,7 +4794,7 @@ class App:
             self.log(f"Lag test STOP_MARKED at {now_elapsed:.1f} ms; waiting for muxed MP4")
             self.root.after(
                 LAG_TEST_STOP_OK_TIMEOUT_MS,
-                lambda key=session.client_key: self._lag_test_stop_ok_timeout(key),
+                lambda key=session.client_key, label=session.label: self._lag_test_stop_ok_timeout(key, label),
             )
         elif cmd == "STOP_OK" and session.stop_ok_elapsed_ms is None:
             session.stop_ok_elapsed_ms = now_elapsed
@@ -4729,17 +4806,23 @@ class App:
             self.log(f"Lag test STOP_OK at {now_elapsed:.1f} ms; MP4 muxed, waiting for READY")
             self.root.after(
                 LAG_TEST_READY_TIMEOUT_MS,
-                lambda key=session.client_key: self._lag_test_ready_timeout(key),
+                lambda key=session.client_key, label=session.label: self._lag_test_ready_timeout(key, label),
             )
         elif cmd == "READY":
             session.ready_elapsed_ms = now_elapsed
             self.log(f"Lag test READY at {now_elapsed:.1f} ms: {rest or 'PREVIEW'}")
-            self.root.after(250, lambda key=session.client_key: self._lag_test_begin_transfer_lookup(key))
+            self.root.after(
+                250,
+                lambda key=session.client_key, label=session.label: self._lag_test_begin_transfer_lookup(key, label),
+            )
         elif cmd == "READY_ERR":
             session.ready_elapsed_ms = now_elapsed
             self._set_lag_test_status(f"Ready issue after lag test: {rest or 'unknown'}")
             self.log(f"Lag test READY_ERR at {now_elapsed:.1f} ms: {rest or 'unknown'}")
-            self.root.after(250, lambda key=session.client_key: self._lag_test_begin_transfer_lookup(key))
+            self.root.after(
+                250,
+                lambda key=session.client_key, label=session.label: self._lag_test_begin_transfer_lookup(key, label),
+            )
         elif cmd == "STOP_ERR":
             self._finish_lag_test_error(f"Phone stop failed: {rest or 'unknown'}")
         elif cmd == "BUSY":
@@ -4763,6 +4846,7 @@ class App:
         if not video_path:
             self._finish_lag_test_error("Transferred lag-test MP4 was not found locally")
             return
+        session.segment_metrics = self._lag_test_local_segment_metrics(session)
 
         timing = LagTiming(
             label=session.label,
@@ -4778,22 +4862,27 @@ class App:
             report_paths = {}
             try:
                 report_base = os.path.splitext(video_path)[0] + "_lag_report"
+                report_extra = {
+                    "client": session.client_name,
+                    "client_addr": session.client_addr,
+                    "capture_name": session.capture_name,
+                    "intended_start_ms": LAG_TEST_START_TARGET_MS,
+                    "intended_stop_ms": LAG_TEST_STOP_TARGET_MS,
+                    "actual_start_command_elapsed_ms": session.actual_start_command_elapsed_ms,
+                    "actual_stop_command_elapsed_ms": session.actual_stop_command_elapsed_ms,
+                    "display_refresh_hz": session.display_refresh_hz,
+                    "display_tick_interval_ms": session.display_tick_interval_ms,
+                    "stop_marked_elapsed_ms": session.stop_marked_elapsed_ms,
+                    "stop_ok_elapsed_ms": session.stop_ok_elapsed_ms,
+                    "ready_elapsed_ms": session.ready_elapsed_ms,
+                    "segment": session.segment_metrics,
+                }
+                report_extra["command_timing"] = _build_lag_test_command_timing(report_extra, analysis)
                 report_paths = write_lag_report(
                     report_base,
                     timing,
                     analysis,
-                    extra={
-                        "client": session.client_name,
-                        "client_addr": session.client_addr,
-                        "capture_name": session.capture_name,
-                        "intended_start_ms": LAG_TEST_START_TARGET_MS,
-                        "intended_stop_ms": LAG_TEST_STOP_TARGET_MS,
-                        "actual_start_command_elapsed_ms": session.actual_start_command_elapsed_ms,
-                        "actual_stop_command_elapsed_ms": session.actual_stop_command_elapsed_ms,
-                        "stop_marked_elapsed_ms": session.stop_marked_elapsed_ms,
-                        "stop_ok_elapsed_ms": session.stop_ok_elapsed_ms,
-                        "ready_elapsed_ms": session.ready_elapsed_ms,
-                    },
+                    extra=report_extra,
                 )
             except Exception as exc:
                 analysis.error = (
@@ -4826,6 +4915,22 @@ class App:
                 f"confidence {analysis.confidence:.2f}"
             )
         self._set_lag_test_status(status)
+        command_timing = _build_lag_test_command_timing(
+            {
+                "intended_start_ms": LAG_TEST_START_TARGET_MS,
+                "intended_stop_ms": LAG_TEST_STOP_TARGET_MS,
+                "actual_start_command_elapsed_ms": session.actual_start_command_elapsed_ms,
+                "actual_stop_command_elapsed_ms": session.actual_stop_command_elapsed_ms,
+                "segment": session.segment_metrics,
+            },
+            analysis,
+        )
+        if command_timing.get("late"):
+            timing_note = f"Command timing late: {command_timing.get('late_message')}"
+            self._set_lag_test_status(f"{status} | {timing_note}")
+            self.log(f"Lag test command timing warning: {command_timing.get('late_message')}")
+        else:
+            self.log("Lag test command timing: phone receive duration matched Hub START/STOP timing")
         self.log(
             "Lag test result: "
             f"first={analysis.first_frame_elapsed_ms} ms vs 1000 ms ({self._fmt_ms(analysis.start_lag_ms)}), "
@@ -4838,6 +4943,16 @@ class App:
             f"last_clean={analysis.last_frame_clean}, "
             f"fps={analysis.fps:.2f}, confidence={analysis.confidence:.2f}"
         )
+        segment = session.segment_metrics or {}
+        if segment:
+            self.log(
+                "Lag test segment metrics: "
+                f"mux_start={self._fmt_us_as_ms(segment.get('chosen_start_offset_us'))}, "
+                f"nearest_before={self._fmt_us_as_ms(segment.get('nearest_keyframe_before_start_offset_us'))}, "
+                f"nearest_after={self._fmt_us_as_ms(segment.get('nearest_keyframe_after_start_offset_us'))}, "
+                f"all_intra={segment.get('all_intra')}, "
+                f"keyframes={segment.get('candidate_keyframe_count')}/{segment.get('candidate_sample_count')}"
+            )
         if analysis.first_frame_image_path:
             self.log(f"Lag test first frame: {analysis.first_frame_image_path}")
         if analysis.last_frame_image_path:
@@ -4847,17 +4962,33 @@ class App:
         session.display.set_phase("DONE")
         session.display.close()
         self._lag_test_session = None
+        self._set_phone_preview_suspended_for_lag_test(False)
         self.update_start_stop_buttons()
 
     def _lag_test_local_video_path(self, session: HubLagTestSession) -> Optional[str]:
+        return self._lag_test_local_capture_file_path(session, ".mp4")
+
+    def _lag_test_local_segment_metrics(self, session: HubLagTestSession) -> Optional[dict]:
+        segment_path = self._lag_test_local_capture_file_path(session, ".segment.json")
+        if not segment_path:
+            return None
+        try:
+            with open(segment_path, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception as exc:
+            self.log(f"Could not read lag-test segment metrics: {exc}")
+            return None
+
+    def _lag_test_local_capture_file_path(self, session: HubLagTestSession, suffix: str) -> Optional[str]:
         capture_name = session.capture_name
         capture = session.capture_info or {}
         if not capture_name:
             return None
+        suffix = suffix.lower()
         save_dir = self.get_save_dir()
         for file_info in capture.get("files", []):
             file_name = str(file_info.get("name", ""))
-            if not file_name.lower().endswith(".mp4"):
+            if not file_name.lower().endswith(suffix):
                 continue
             try:
                 rel_path = lag_test_storage_relative_path(f"{capture_name}/{file_name}")
@@ -4874,7 +5005,7 @@ class App:
             if not os.path.isdir(capture_dir):
                 continue
             for name in os.listdir(capture_dir):
-                if name.lower().endswith(".mp4"):
+                if name.lower().endswith(suffix):
                     return os.path.join(capture_dir, name)
         return None
 
@@ -4888,15 +5019,29 @@ class App:
         self._finish_lag_test_error("Lag test phone disconnected")
         return None
 
+    def _lag_test_session_matches(self, client_key: str, label: str) -> bool:
+        session = self._lag_test_session
+        return session is not None and session.client_key == client_key and session.label == label
+
     def _finish_lag_test_error(self, message: str):
         session = self._lag_test_session
         if session is not None:
             session.display.set_phase("ERROR")
             session.display.close()
         self._lag_test_session = None
+        self._set_phone_preview_suspended_for_lag_test(False)
         self._set_lag_test_status(f"Error: {message}")
         self.log(f"Lag test stopped: {message}")
         self.update_start_stop_buttons()
+
+    def _set_phone_preview_suspended_for_lag_test(self, suspended: bool):
+        pane = getattr(self, "phone_stream_pane", None)
+        if pane is None:
+            return
+        try:
+            pane.set_display_suspended(suspended)
+        except Exception as exc:
+            self.log(f"Could not update phone preview suspension: {exc}")
 
     def _set_lag_test_status(self, text: str):
         if hasattr(self, "lag_test_status_var"):
@@ -4905,6 +5050,15 @@ class App:
     @staticmethod
     def _fmt_ms(value: Optional[float]) -> str:
         return "n/a" if value is None else f"{value:.1f} ms"
+
+    @staticmethod
+    def _fmt_us_as_ms(value) -> str:
+        if value is None:
+            return "n/a"
+        try:
+            return f"{float(value) / 1000.0:.3f} ms"
+        except Exception:
+            return "n/a"
 
     # ------- button callbacks -------
 
