@@ -13,6 +13,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import serial
 import serial.tools.list_ports
+import android_adb
 from lag_test import LagTiming, LagTimingDisplay, analyze_lag_video, write_lag_report
 # -----------------------------------
 # CONFIG
@@ -48,6 +49,15 @@ LAG_TEST_STOP_OK_TIMEOUT_MS = 20000
 LAG_TEST_READY_TIMEOUT_MS = 3000
 LAG_TEST_PHONE_PREROLL_MS = 1000
 LAG_TEST_COMMAND_TIMING_TOLERANCE_MS = 25.0
+TIME_SYNC_CONNECT_BURST_COUNT = 20
+TIME_SYNC_LAG_TEST_BURST_COUNT = 10
+TIME_SYNC_BURST_INTERVAL_MS = 50
+TIME_SYNC_MAX_SAMPLE_AGE_SEC = 10.0
+TIME_SYNC_MAX_BEST_RTT_MS = 250.0
+TIME_SYNC_MIN_SAMPLES_FOR_SCHEDULED = 3
+SCHEDULED_COMMAND_MIN_LEAD_MS = 150.0
+SCHEDULED_COMMAND_SAFETY_MARGIN_MS = 100.0
+SCHEDULED_COMMAND_MAX_LEAD_MS = 900.0
 LAG_TEST_TRANSFER_ROOT = "LagTests"
 CAPTURE_STOP_OK_TIMEOUT_MS = 20000
 CAPTURE_READY_TIMEOUT_MS = 3000
@@ -119,6 +129,11 @@ DEFAULT_APP_CONFIG = {
         "preferred_height": DEFAULT_CAMERA_HEIGHT,
         "iso": DEFAULT_CAMERA_ISO,
         "shutter_fps_multiplier": DEFAULT_CAMERA_SHUTTER_FPS_MULTIPLIER,
+    },
+    "phone_transport": {
+        "mode": "adb_reverse_first",
+        "adb_path": "",
+        "adb_poll_interval_sec": 3,
     },
 }
 
@@ -332,6 +347,36 @@ def _field_float(fields: Dict[str, str], key: str) -> Optional[float]:
         return None
 
 
+def _field_int(fields: Dict[str, str], key: str) -> Optional[int]:
+    try:
+        return int(fields[key])
+    except Exception:
+        return None
+
+
+def _median(values: List[float]) -> Optional[float]:
+    if not values:
+        return None
+    ordered = sorted(float(v) for v in values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+
+def _percentile(values: List[float], percentile: float) -> Optional[float]:
+    if not values:
+        return None
+    ordered = sorted(float(v) for v in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * max(0.0, min(100.0, percentile)) / 100.0
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    frac = rank - lower
+    return ordered[lower] * (1.0 - frac) + ordered[upper] * frac
+
+
 def _fmt_delta_ms(value: Optional[float]) -> Optional[str]:
     if value is None:
         return None
@@ -470,6 +515,129 @@ def _split_protocol_payload_and_fields(text: str) -> Tuple[str, str]:
 
 
 @dataclass
+class TimeSyncSample:
+    seq: int
+    hub_tx_ns: int
+    hub_rx_ns: int
+    phone_rx_ns: int
+    phone_tx_ns: int
+    rtt_ms: float
+    offset_ns: int
+    recorded_perf: float
+
+
+class ClientTimeSync:
+    def __init__(self, max_samples: int = 120):
+        self.max_samples = max_samples
+        self.samples: List[TimeSyncSample] = []
+        self.pending: Dict[int, int] = {}
+        self.next_seq = 1
+
+    def begin_sample(self) -> Tuple[int, int]:
+        seq = self.next_seq
+        self.next_seq += 1
+        hub_tx_ns = time.perf_counter_ns()
+        self.pending[seq] = hub_tx_ns
+        if len(self.pending) > 256:
+            stale = sorted(self.pending)[: len(self.pending) - 256]
+            for stale_seq in stale:
+                self.pending.pop(stale_seq, None)
+        return seq, hub_tx_ns
+
+    def complete_sample(self, seq: int, hub_tx_ns: int, phone_rx_ns: int, phone_tx_ns: int) -> Optional[TimeSyncSample]:
+        original_hub_tx_ns = self.pending.pop(seq, None)
+        if original_hub_tx_ns is not None:
+            hub_tx_ns = original_hub_tx_ns
+        hub_rx_ns = time.perf_counter_ns()
+        if phone_rx_ns <= 0 or phone_tx_ns <= 0 or phone_tx_ns < phone_rx_ns:
+            return None
+        phone_processing_ns = phone_tx_ns - phone_rx_ns
+        rtt_ns = (hub_rx_ns - hub_tx_ns) - phone_processing_ns
+        if rtt_ns < 0:
+            rtt_ns = 0
+        hub_mid_ns = (hub_tx_ns + hub_rx_ns) // 2
+        phone_mid_ns = (phone_rx_ns + phone_tx_ns) // 2
+        sample = TimeSyncSample(
+            seq=seq,
+            hub_tx_ns=hub_tx_ns,
+            hub_rx_ns=hub_rx_ns,
+            phone_rx_ns=phone_rx_ns,
+            phone_tx_ns=phone_tx_ns,
+            rtt_ms=rtt_ns / 1_000_000.0,
+            offset_ns=phone_mid_ns - hub_mid_ns,
+            recorded_perf=time.perf_counter(),
+        )
+        self.samples.append(sample)
+        if len(self.samples) > self.max_samples:
+            self.samples = self.samples[-self.max_samples :]
+        return sample
+
+    def recent_samples(self, max_age_sec: float = TIME_SYNC_MAX_SAMPLE_AGE_SEC) -> List[TimeSyncSample]:
+        cutoff = time.perf_counter() - max(0.0, float(max_age_sec))
+        return [sample for sample in self.samples if sample.recorded_perf >= cutoff]
+
+    def best_sample(self) -> Optional[TimeSyncSample]:
+        samples = self.recent_samples()
+        if not samples:
+            samples = list(self.samples[-20:])
+        if not samples:
+            return None
+        return min(samples, key=lambda sample: sample.rtt_ms)
+
+    def best_offset_ns(self) -> Optional[int]:
+        sample = self.best_sample()
+        return None if sample is None else sample.offset_ns
+
+    def is_usable(self) -> bool:
+        samples = self.recent_samples()
+        best = self.best_sample()
+        return (
+            len(samples) >= TIME_SYNC_MIN_SAMPLES_FOR_SCHEDULED
+            and best is not None
+            and best.rtt_ms <= TIME_SYNC_MAX_BEST_RTT_MS
+        )
+
+    def scheduled_lead_ms(self) -> float:
+        samples = self.recent_samples()
+        if not samples:
+            samples = list(self.samples[-20:])
+        rtts = [sample.rtt_ms for sample in samples]
+        p95 = _percentile(rtts, 95.0)
+        basis = float(p95) if p95 is not None else SCHEDULED_COMMAND_MIN_LEAD_MS
+        lead = max(SCHEDULED_COMMAND_MIN_LEAD_MS, basis + SCHEDULED_COMMAND_SAFETY_MARGIN_MS)
+        return min(SCHEDULED_COMMAND_MAX_LEAD_MS, lead)
+
+    def summary(self) -> dict:
+        samples = self.recent_samples()
+        if not samples:
+            samples = list(self.samples[-20:])
+        rtts = [sample.rtt_ms for sample in samples]
+        offsets_ms = [sample.offset_ns / 1_000_000.0 for sample in samples]
+        best = min(samples, key=lambda sample: sample.rtt_ms) if samples else None
+        median_offset = _median(offsets_ms)
+        offset_jitter = None
+        if median_offset is not None:
+            deviations = [abs(value - median_offset) for value in offsets_ms]
+            offset_jitter = _median(deviations)
+        return {
+            "sample_count": len(samples),
+            "pending_count": len(self.pending),
+            "usable": self.is_usable() if samples else False,
+            "best_seq": None if best is None else best.seq,
+            "best_rtt_ms": None if best is None else best.rtt_ms,
+            "rtt_min_ms": min(rtts) if rtts else None,
+            "rtt_median_ms": _median(rtts),
+            "rtt_p95_ms": _percentile(rtts, 95.0),
+            "rtt_max_ms": max(rtts) if rtts else None,
+            "offset_ms": None if best is None else best.offset_ns / 1_000_000.0,
+            "offset_median_ms": median_offset,
+            "offset_jitter_median_ms": offset_jitter,
+            "lead_ms": self.scheduled_lead_ms() if samples else SCHEDULED_COMMAND_MIN_LEAD_MS,
+            "latest_age_sec": None if not samples else time.perf_counter() - samples[-1].recorded_perf,
+        }
+
+
+@dataclass
 class HubLagTestSession:
     label: str
     client_key: str
@@ -484,9 +652,17 @@ class HubLagTestSession:
     actual_stop_command_elapsed_ms: Optional[float] = None
     start_command_elapsed_ms: Optional[float] = None
     stop_command_elapsed_ms: Optional[float] = None
+    scheduled_commands_enabled: bool = False
+    scheduled_command_lead_ms: Optional[float] = None
+    sync_summary: Optional[dict] = None
+    start_target_phone_ns: Optional[int] = None
+    stop_target_phone_ns: Optional[int] = None
     start_ack_elapsed_ms: Optional[float] = None
+    start_ack_fields: Optional[dict] = None
     stop_marked_elapsed_ms: Optional[float] = None
+    stop_marked_fields: Optional[dict] = None
     stop_ok_elapsed_ms: Optional[float] = None
+    stop_ok_fields: Optional[dict] = None
     stop_ack_elapsed_ms: Optional[float] = None
     ready_elapsed_ms: Optional[float] = None
     capture_name: Optional[str] = None
@@ -866,6 +1042,38 @@ def normalize_camera_defaults(raw, messages: List[str]) -> dict:
     }
 
 
+def normalize_phone_transport(raw, messages: List[str]) -> dict:
+    defaults = copy.deepcopy(DEFAULT_APP_CONFIG["phone_transport"])
+    if not isinstance(raw, dict):
+        messages.append("Config phone_transport must be an object; using defaults")
+        raw = {}
+
+    mode = raw.get("mode", defaults["mode"])
+    allowed_modes = {"adb_reverse_first", "wifi_only"}
+    if mode not in allowed_modes:
+        messages.append(
+            "Config phone_transport.mode must be adb_reverse_first or wifi_only; "
+            f"using {defaults['mode']}"
+        )
+        mode = defaults["mode"]
+
+    adb_path = raw.get("adb_path", defaults["adb_path"])
+    if not isinstance(adb_path, str):
+        messages.append("Config phone_transport.adb_path must be a string; using automatic ADB lookup")
+        adb_path = defaults["adb_path"]
+
+    return {
+        "mode": mode,
+        "adb_path": adb_path,
+        "adb_poll_interval_sec": clamp_int(
+            raw.get("adb_poll_interval_sec"),
+            defaults["adb_poll_interval_sec"],
+            1,
+            60,
+        ),
+    }
+
+
 def load_app_config() -> Tuple[dict, List[str]]:
     messages = []
     raw_config = {}
@@ -912,6 +1120,10 @@ def load_app_config() -> Tuple[dict, List[str]]:
         raw_config.get("camera_defaults", DEFAULT_APP_CONFIG["camera_defaults"]),
         messages,
     )
+    phone_transport = normalize_phone_transport(
+        raw_config.get("phone_transport", DEFAULT_APP_CONFIG["phone_transport"]),
+        messages,
+    )
 
     return (
         {
@@ -925,6 +1137,7 @@ def load_app_config() -> Tuple[dict, List[str]]:
                 )
             ),
             "camera_defaults": camera_defaults,
+            "phone_transport": phone_transport,
         },
         messages,
     )
@@ -1249,6 +1462,8 @@ class TcpServer:
                 "addr": addr,
                 "key": f"{addr[0]}:{addr[1]}",
                 "name": None,
+                "transport": "usb_adb_reverse" if addr[0] in ("127.0.0.1", "::1") else "wifi",
+                "transport_details": {},
                 "last_name_ok": None,
                 "last_name_sent": None,
                 "rx_mode": "line",
@@ -1263,6 +1478,7 @@ class TcpServer:
                 "current_file_rel": "",
                 "pending_file_done_rel": "",
                 "send_queue": queue.Queue(),
+                "time_sync": ClientTimeSync(),
                 "closed": False,
             }
 
@@ -1272,6 +1488,7 @@ class TcpServer:
 
             threading.Thread(target=self._client_send_loop, args=(client,), daemon=True).start()
             threading.Thread(target=self.client_loop, args=(client,), daemon=True).start()
+            self.send_time_sync_burst(client, TIME_SYNC_CONNECT_BURST_COUNT)
 
     def client_loop(self, client):
         conn = client["conn"]
@@ -1371,6 +1588,37 @@ class TcpServer:
         if cmd == "HELLO":
             client["name"] = rest or None
             self._notify_clients_changed()
+        elif cmd == "TRANSPORT":
+            labels, fields = _parse_protocol_fields(rest)
+            transport = labels[0].lower() if labels else "unknown"
+            client["transport"] = transport
+            client["transport_details"] = fields
+            self._notify_clients_changed()
+        elif cmd == "SYNC_OK":
+            labels, fields = _parse_protocol_fields(rest)
+            seq = _field_int(fields, "seq")
+            if seq is None and labels:
+                try:
+                    seq = int(labels[0])
+                except Exception:
+                    seq = None
+            hub_tx_ns = _field_int(fields, "hub_tx_ns")
+            phone_rx_ns = _field_int(fields, "phone_rx_ns")
+            phone_tx_ns = _field_int(fields, "phone_tx_ns")
+            sync = client.get("time_sync")
+            if (
+                isinstance(sync, ClientTimeSync)
+                and seq is not None
+                and hub_tx_ns is not None
+                and phone_rx_ns is not None
+                and phone_tx_ns is not None
+            ):
+                sample = sync.complete_sample(seq, hub_tx_ns, phone_rx_ns, phone_tx_ns)
+                if sample is not None and seq <= 3:
+                    self.log(
+                        f"Time sync {addr}: rtt={sample.rtt_ms:.2f} ms "
+                        f"offset={sample.offset_ns / 1_000_000.0:+.2f} ms"
+                    )
         elif cmd in ("NAME_OK", "NAMEOK", "NAME-OK"):
             ack_payload, ack_fields = _split_protocol_payload_and_fields(rest)
             ack_name = ack_payload or client.get("last_name_sent")
@@ -1511,7 +1759,16 @@ class TcpServer:
         for c in clients:
             ip, port = c["addr"]
             name = c["name"] or "Unknown"
-            infos.append((c, f"{name} ({ip}:{port})"))
+            transport = str(c.get("transport") or "").lower()
+            if transport == "usb_adb_reverse":
+                suffix = "USB"
+            elif transport == "wifi":
+                suffix = f"Wi-Fi {ip}:{port}"
+            elif transport == "direct":
+                suffix = f"Direct {ip}:{port}"
+            else:
+                suffix = f"{ip}:{port}"
+            infos.append((c, f"{name} ({suffix})"))
         return infos
 
     def _notify_clients_changed(self):
@@ -1555,7 +1812,15 @@ class TcpServer:
             if item is None:
                 break
 
-            data = item["data"]
+            build_data = item.get("build_data")
+            if build_data is not None:
+                try:
+                    data = build_data()
+                except Exception as e:
+                    self.log(f"Send build error {client['addr']}: {e}")
+                    continue
+            else:
+                data = item["data"]
             name_payload = item.get("name_payload")
 
             try:
@@ -1575,6 +1840,14 @@ class TcpServer:
             return
         send_queue.put({"data": data, "name_payload": name_payload})
 
+    def _enqueue_send_builder(self, client, build_data: Callable[[], bytes]):
+        if client.get("closed"):
+            return
+        send_queue = client.get("send_queue")
+        if send_queue is None:
+            return
+        send_queue.put({"build_data": build_data})
+
     def broadcast(self, msg: str):
         data = (msg + "\n").encode("utf-8")
         name_payload = None
@@ -1590,6 +1863,32 @@ class TcpServer:
     def send_to_client(self, client, msg: str):
         data = (msg + "\n").encode("utf-8")
         self._enqueue_send(client, data)
+
+    def send_time_sync_sample(self, client):
+        sync = client.get("time_sync")
+        if not isinstance(sync, ClientTimeSync):
+            return
+
+        def build_data() -> bytes:
+            seq, hub_tx_ns = sync.begin_sample()
+            return f"SYNC {seq} hub_tx_ns={hub_tx_ns}\n".encode("utf-8")
+
+        self._enqueue_send_builder(client, build_data)
+
+    def send_time_sync_burst(self, client, count: int, interval_ms: int = TIME_SYNC_BURST_INTERVAL_MS):
+        count = max(0, int(count))
+        if count <= 0:
+            return
+
+        def worker():
+            for index in range(count):
+                if client.get("closed"):
+                    break
+                self.send_time_sync_sample(client)
+                if index + 1 < count:
+                    time.sleep(max(0, interval_ms) / 1000.0)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def send_name_to_unacked(self, name: str) -> int:
         data = f"NAME {name}\n".encode("utf-8")
@@ -1684,6 +1983,7 @@ class App:
         self.app_state, state_messages = load_app_state()
         self.config_messages.extend(state_messages)
         self.camera_defaults = self.app_config["camera_defaults"]
+        self.phone_transport_config = self.app_config["phone_transport"]
         saved_camera_profile = normalize_camera_profile(
             self.app_state.get("camera_profile")
         )
@@ -1772,6 +2072,13 @@ class App:
         self.tcp = None
         self.discovery = None
         self.phone_connection_enabled = False
+        self.adb_path = None
+        self.adb_ready_serials = set()
+        self.adb_reverse_serials = set()
+        self.adb_status_text = "ADB not checked"
+        self._adb_monitor_stop_event = threading.Event()
+        self._adb_monitor_thread = None
+        self._adb_last_log_state = None
 
         # Main 3-column layout: controls and logs on the left, shared settings in the
         # middle, and selected-phone controls on the right.
@@ -3538,10 +3845,110 @@ class App:
         except tk.TclError:
             pass
 
+    def start_adb_monitor(self):
+        if self.phone_transport_config.get("mode") == "wifi_only":
+            self.adb_status_text = "ADB disabled; Wi-Fi only"
+            self.update_phone_connection_ui()
+            return
+        if self._adb_monitor_thread and self._adb_monitor_thread.is_alive():
+            return
+
+        configured_path = str(self.phone_transport_config.get("adb_path") or "")
+        self.adb_path = android_adb.find_adb_exe(configured_path)
+        if not self.adb_path:
+            self.adb_status_text = "ADB unavailable; Wi-Fi discovery only"
+            self.update_phone_connection_ui()
+            self.log("ADB not found; phones can still connect over Wi-Fi")
+            return
+
+        self._adb_monitor_stop_event.clear()
+        self._adb_monitor_thread = threading.Thread(
+            target=self._adb_monitor_loop,
+            name="capturebridge-adb-monitor",
+            daemon=True,
+        )
+        self._adb_monitor_thread.start()
+        self.log(f"ADB monitor started: {self.adb_path}")
+
+    def stop_adb_monitor(self):
+        self._adb_monitor_stop_event.set()
+        thread = self._adb_monitor_thread
+        self._adb_monitor_thread = None
+        if thread and thread.is_alive():
+            thread.join(timeout=2.0)
+        self._remove_all_adb_reverses()
+        self.adb_ready_serials.clear()
+        self.adb_status_text = "ADB stopped"
+        self.update_phone_connection_ui()
+
+    def _adb_monitor_loop(self):
+        interval = int(self.phone_transport_config.get("adb_poll_interval_sec") or 3)
+        while not self._adb_monitor_stop_event.is_set():
+            self._refresh_adb_reverses()
+            self._adb_monitor_stop_event.wait(max(1, interval))
+
+    def _refresh_adb_reverses(self):
+        adb_path = self.adb_path
+        if not adb_path:
+            return
+
+        result = android_adb.list_devices(adb_path)
+        if not result.ok:
+            self._set_adb_status(f"ADB device check failed: {result.error}")
+            return
+
+        devices = android_adb.parse_devices(result.stdout)
+        ready_devices = [device for device in devices if device.state == "device"]
+        ready_serials = {device.serial for device in ready_devices}
+        unauthorized = [device for device in devices if device.state == "unauthorized"]
+        offline = [device for device in devices if device.state == "offline"]
+
+        for serial in sorted(self.adb_reverse_serials - ready_serials):
+            self._remove_adb_reverse(serial)
+
+        for device in ready_devices:
+            if device.serial in self.adb_reverse_serials:
+                continue
+            reverse = android_adb.setup_reverse(adb_path, device.serial, SERVER_PORT, SERVER_PORT)
+            label = android_adb.model_label(device)
+            if reverse.ok:
+                self.adb_reverse_serials.add(device.serial)
+                self.log(f"ADB reverse ready for {label} ({device.serial}) on tcp:{SERVER_PORT}")
+            else:
+                self.log(f"ADB reverse failed for {label} ({device.serial}): {reverse.error}")
+
+        self.adb_ready_serials = ready_serials
+        status = f"ADB: {android_adb.device_summary(devices)}"
+        if ready_devices:
+            status += f", reverse active {len(self.adb_reverse_serials)}"
+        if unauthorized:
+            status += "; authorize USB debugging on phone"
+        if offline:
+            status += "; reconnect offline phone"
+        self._set_adb_status(status)
+
+    def _set_adb_status(self, status: str):
+        self.adb_status_text = status
+        if status != self._adb_last_log_state:
+            self.log(status)
+            self._adb_last_log_state = status
+        self.update_phone_connection_ui()
+
+    def _remove_adb_reverse(self, serial: str):
+        adb_path = self.adb_path
+        if adb_path:
+            android_adb.remove_reverse(adb_path, serial, SERVER_PORT)
+        self.adb_reverse_serials.discard(serial)
+
+    def _remove_all_adb_reverses(self):
+        for serial in list(self.adb_reverse_serials):
+            self._remove_adb_reverse(serial)
+
     def connect_phone_network(self, log_success=True) -> bool:
         if self.tcp is not None:
             self.phone_connection_enabled = True
             self.update_phone_connection_ui()
+            self.start_adb_monitor()
             return True
 
         tcp = None
@@ -3583,6 +3990,7 @@ class App:
         self.discovery = discovery
         self.phone_connection_enabled = True
         self.update_phone_connection_ui()
+        self.start_adb_monitor()
         if log_success:
             self.log("Phone connection enabled")
         self.broadcast_generated_name_on_change()
@@ -3601,6 +4009,7 @@ class App:
         self.discovery = None
         self.tcp = None
         self.phone_connection_enabled = False
+        self.stop_adb_monitor()
 
         if discovery is not None:
             discovery.close()
@@ -3623,7 +4032,8 @@ class App:
             self.phone_disconnect_btn.configure(text="Disconnect" if self.tcp is not None else "Connect")
         if hasattr(self, "info_label"):
             if self.tcp is not None:
-                self.info_label.configure(text=f"Server: {SERVER_HOST}:{SERVER_PORT}")
+                adb_status = self.adb_status_text or "ADB not checked"
+                self.info_label.configure(text=f"Server: {SERVER_HOST}:{SERVER_PORT} | {adb_status}")
             elif error_text:
                 self.info_label.configure(text=f"Phone connection off: {error_text}")
             else:
@@ -4606,9 +5016,60 @@ class App:
     def _lag_test_delay_until_ms(self, session: HubLagTestSession, target_ms: float) -> int:
         return max(0, int(round(float(target_ms) - session.display.elapsed_ms())))
 
+    def _lag_test_sync_and_start_countdown(self, client_key: str):
+        session = self._lag_test_session
+        client = self._lag_test_client()
+        if session is None or session.client_key != client_key or client is None or self.tcp is None:
+            return
+        self._set_lag_test_status("Phone prepared; measuring transport jitter")
+        self.tcp.send_time_sync_burst(client, TIME_SYNC_LAG_TEST_BURST_COUNT)
+        wait_ms = TIME_SYNC_LAG_TEST_BURST_COUNT * TIME_SYNC_BURST_INTERVAL_MS + 200
+        self.root.after(wait_ms, lambda key=client_key: self._lag_test_start_countdown(key))
+
+    def _lag_test_configure_scheduled_commands(self, session: HubLagTestSession, client) -> None:
+        sync = client.get("time_sync") if client else None
+        if not isinstance(sync, ClientTimeSync):
+            session.scheduled_commands_enabled = False
+            session.sync_summary = None
+            return
+
+        summary = sync.summary()
+        session.sync_summary = summary
+        offset_ns = sync.best_offset_ns()
+        if offset_ns is None or not sync.is_usable():
+            session.scheduled_commands_enabled = False
+            self.log(
+                "Lag test time sync not usable; falling back to immediate START/STOP "
+                f"(samples={summary.get('sample_count')}, best_rtt={summary.get('best_rtt_ms')})"
+            )
+            return
+
+        display_start_ns = int(session.display_started_perf * 1_000_000_000)
+        session.start_target_phone_ns = display_start_ns + int(LAG_TEST_START_TARGET_MS * 1_000_000) + offset_ns
+        session.stop_target_phone_ns = display_start_ns + int(LAG_TEST_STOP_TARGET_MS * 1_000_000) + offset_ns
+        session.scheduled_command_lead_ms = sync.scheduled_lead_ms()
+        session.scheduled_commands_enabled = True
+        best_rtt = summary.get("best_rtt_ms")
+        p95_rtt = summary.get("rtt_p95_ms")
+        offset_ms = summary.get("offset_ms")
+        self.log(
+            "Lag test scheduled phone cuts enabled: "
+            f"lead={session.scheduled_command_lead_ms:.1f} ms, "
+            f"best_rtt={0.0 if best_rtt is None else best_rtt:.2f} ms, "
+            f"p95_rtt={0.0 if p95_rtt is None else p95_rtt:.2f} ms, "
+            f"offset={0.0 if offset_ms is None else offset_ms:+.2f} ms"
+        )
+
+    def _lag_test_set_display_phase(self, client_key: str, label: str, phase: str):
+        session = self._lag_test_session
+        if not self._lag_test_session_matches(client_key, label) or session is None:
+            return
+        session.display.set_phase(phase)
+
     def _lag_test_start_countdown(self, client_key: str):
         session = self._lag_test_session
-        if session is None or session.client_key != client_key:
+        client = self._lag_test_client()
+        if session is None or session.client_key != client_key or client is None:
             return
         if session.display.window is not None:
             return
@@ -4621,13 +5082,38 @@ class App:
         session.display_refresh_hz = getattr(session.display, "refresh_hz", None)
         session.display_tick_interval_ms = getattr(session.display, "tick_interval_ms", None)
         session.display.set_phase("ARMED")
-        self._set_lag_test_status("Phone prepared; START scheduled at 1000 ms")
+        self._lag_test_configure_scheduled_commands(session, client)
+        if session.scheduled_commands_enabled:
+            self._set_lag_test_status("Phone prepared; scheduled phone-clock cuts at 1000/2000 ms")
+        else:
+            self._set_lag_test_status("Phone prepared; immediate START scheduled at 1000 ms")
         if session.display_refresh_hz and session.display_tick_interval_ms:
             self.log(
                 "Lag test display refresh: "
                 f"{session.display_refresh_hz:.2f} Hz "
                 f"({session.display_tick_interval_ms:.2f} ms frame target)"
             )
+
+        if session.scheduled_commands_enabled:
+            lead_ms = float(session.scheduled_command_lead_ms or SCHEDULED_COMMAND_MIN_LEAD_MS)
+            self.root.after(
+                self._lag_test_delay_until_ms(session, LAG_TEST_START_TARGET_MS),
+                lambda key=session.client_key, label=session.label: self._lag_test_set_display_phase(key, label, "START"),
+            )
+            self.root.after(
+                self._lag_test_delay_until_ms(session, LAG_TEST_STOP_TARGET_MS),
+                lambda key=session.client_key, label=session.label: self._lag_test_set_display_phase(key, label, "STOP"),
+            )
+            self.root.after(
+                self._lag_test_delay_until_ms(session, LAG_TEST_START_TARGET_MS - lead_ms),
+                lambda key=session.client_key, label=session.label: self._lag_test_send_start(key, label),
+            )
+            self.root.after(
+                self._lag_test_delay_until_ms(session, LAG_TEST_STOP_TARGET_MS - lead_ms),
+                lambda key=session.client_key, label=session.label: self._lag_test_send_stop(key, label),
+            )
+            return
+
         self.root.after(
             self._lag_test_delay_until_ms(session, LAG_TEST_START_TARGET_MS),
             lambda key=session.client_key, label=session.label: self._lag_test_send_start(key, label),
@@ -4647,35 +5133,48 @@ class App:
         client = self._lag_test_client()
         if not self._lag_test_session_matches(client_key, label) or session is None or client is None or self.tcp is None:
             return
-        session.display.set_phase("START")
         session.actual_start_command_elapsed_ms = session.display.elapsed_ms()
         session.start_command_elapsed_ms = LAG_TEST_START_TARGET_MS
-        self.tcp.send_to_client(client, "START")
-        self._set_lag_test_status("START target 1000 ms; recording timing target")
+        if session.scheduled_commands_enabled and session.start_target_phone_ns is not None:
+            command = f"START_AT {session.label} phone_elapsed_ns={session.start_target_phone_ns}"
+            self.tcp.send_to_client(client, command)
+            self._set_lag_test_status("START_AT sent early; visual START target remains 1000 ms")
+        else:
+            session.display.set_phase("START")
+            self.tcp.send_to_client(client, "START")
+            self._set_lag_test_status("START target 1000 ms; recording timing target")
         self.log(
-            "Lag test START sent to "
+            "Lag test START command sent to "
             f"{session.client_name} at {session.actual_start_command_elapsed_ms:.1f} ms "
-            f"(target {session.start_command_elapsed_ms:.0f} ms)"
+            f"(target {session.start_command_elapsed_ms:.0f} ms, "
+            f"scheduled={session.scheduled_commands_enabled})"
         )
-        self.root.after(
-            self._lag_test_delay_until_ms(session, LAG_TEST_STOP_TARGET_MS),
-            lambda key=session.client_key, label=session.label: self._lag_test_send_stop(key, label),
-        )
+        if not session.scheduled_commands_enabled:
+            self.root.after(
+                self._lag_test_delay_until_ms(session, LAG_TEST_STOP_TARGET_MS),
+                lambda key=session.client_key, label=session.label: self._lag_test_send_stop(key, label),
+            )
 
     def _lag_test_send_stop(self, client_key: str, label: str):
         session = self._lag_test_session
         client = self._lag_test_client()
         if not self._lag_test_session_matches(client_key, label) or session is None or client is None or self.tcp is None:
             return
-        session.display.set_phase("STOP")
         session.actual_stop_command_elapsed_ms = session.display.elapsed_ms()
         session.stop_command_elapsed_ms = LAG_TEST_STOP_TARGET_MS
-        self.tcp.send_to_client(client, "STOP")
-        self._set_lag_test_status("STOP target 2000 ms; holding target for late frames")
+        if session.scheduled_commands_enabled and session.stop_target_phone_ns is not None:
+            command = f"STOP_AT phone_elapsed_ns={session.stop_target_phone_ns}"
+            self.tcp.send_to_client(client, command)
+            self._set_lag_test_status("STOP_AT sent early; visual STOP target remains 2000 ms")
+        else:
+            session.display.set_phase("STOP")
+            self.tcp.send_to_client(client, "STOP")
+            self._set_lag_test_status("STOP target 2000 ms; holding target for late frames")
         self.log(
-            "Lag test STOP sent to "
+            "Lag test STOP command sent to "
             f"{session.client_name} at {session.actual_stop_command_elapsed_ms:.1f} ms "
-            f"(target {session.stop_command_elapsed_ms:.0f} ms)"
+            f"(target {session.stop_command_elapsed_ms:.0f} ms, "
+            f"scheduled={session.scheduled_commands_enabled})"
         )
         self.root.after(
             LAG_TEST_STOP_MARKED_TIMEOUT_MS,
@@ -4781,23 +5280,33 @@ class App:
                 f"Lag test PREPARE_OK from {session.client_name}: "
                 f"{_format_phone_lifecycle_for_log(cmd, rest or 'READY')}"
             )
-            self._lag_test_start_countdown(session.client_key)
+            self._lag_test_sync_and_start_countdown(session.client_key)
         elif cmd == "PREPARE_ERR":
             self._finish_lag_test_error(f"Phone prepare failed: {rest or 'unknown'}")
         elif cmd == "START_OK" and session.start_ack_elapsed_ms is None:
             session.start_ack_elapsed_ms = now_elapsed
-            self.log(f"Lag test START_OK at {now_elapsed:.1f} ms")
+            _labels, fields = _parse_protocol_fields(rest)
+            session.start_ack_fields = fields
+            target_delta_ms = _field_float(fields, "target_delta_ms")
+            target_note = "" if target_delta_ms is None else f" target_delta={target_delta_ms:+.2f} ms"
+            self.log(f"Lag test START_OK at {now_elapsed:.1f} ms{target_note}")
         elif cmd == "STOP_MARKED" and session.stop_marked_elapsed_ms is None:
             session.stop_marked_elapsed_ms = now_elapsed
             session.stop_ack_elapsed_ms = now_elapsed
+            _labels, fields = _parse_protocol_fields(rest)
+            session.stop_marked_fields = fields
             self._set_lag_test_status("STOP marked; waiting for muxed MP4")
-            self.log(f"Lag test STOP_MARKED at {now_elapsed:.1f} ms; waiting for muxed MP4")
+            target_delta_ms = _field_float(fields, "target_delta_ms")
+            target_note = "" if target_delta_ms is None else f" target_delta={target_delta_ms:+.2f} ms"
+            self.log(f"Lag test STOP_MARKED at {now_elapsed:.1f} ms{target_note}; waiting for muxed MP4")
             self.root.after(
                 LAG_TEST_STOP_OK_TIMEOUT_MS,
                 lambda key=session.client_key, label=session.label: self._lag_test_stop_ok_timeout(key, label),
             )
         elif cmd == "STOP_OK" and session.stop_ok_elapsed_ms is None:
             session.stop_ok_elapsed_ms = now_elapsed
+            _labels, fields = _parse_protocol_fields(rest)
+            session.stop_ok_fields = fields
             if session.stop_marked_elapsed_ms is None:
                 session.stop_marked_elapsed_ms = now_elapsed
                 session.stop_ack_elapsed_ms = now_elapsed
@@ -4856,6 +5365,9 @@ class App:
             start_ack_elapsed_ms=session.start_ack_elapsed_ms,
             stop_ack_elapsed_ms=session.stop_ack_elapsed_ms,
         )
+        lag_client = self._lag_test_client()
+        client_transport = (lag_client or {}).get("transport")
+        client_transport_details = (lag_client or {}).get("transport_details")
 
         def worker():
             analysis = analyze_lag_video(video_path, timing)
@@ -4865,11 +5377,21 @@ class App:
                 report_extra = {
                     "client": session.client_name,
                     "client_addr": session.client_addr,
+                    "client_transport": client_transport,
+                    "client_transport_details": client_transport_details,
                     "capture_name": session.capture_name,
                     "intended_start_ms": LAG_TEST_START_TARGET_MS,
                     "intended_stop_ms": LAG_TEST_STOP_TARGET_MS,
                     "actual_start_command_elapsed_ms": session.actual_start_command_elapsed_ms,
                     "actual_stop_command_elapsed_ms": session.actual_stop_command_elapsed_ms,
+                    "scheduled_commands_enabled": session.scheduled_commands_enabled,
+                    "scheduled_command_lead_ms": session.scheduled_command_lead_ms,
+                    "start_target_phone_ns": session.start_target_phone_ns,
+                    "stop_target_phone_ns": session.stop_target_phone_ns,
+                    "time_sync": session.sync_summary,
+                    "start_ack_fields": session.start_ack_fields,
+                    "stop_marked_fields": session.stop_marked_fields,
+                    "stop_ok_fields": session.stop_ok_fields,
                     "display_refresh_hz": session.display_refresh_hz,
                     "display_tick_interval_ms": session.display_tick_interval_ms,
                     "stop_marked_elapsed_ms": session.stop_marked_elapsed_ms,
@@ -5168,6 +5690,7 @@ class App:
             pane = self.phone_stream_pane
             self.phone_stream_pane = None
             pane.close()
+        self.stop_adb_monitor()
         if self.discovery is not None:
             self.discovery.close()
             self.discovery = None

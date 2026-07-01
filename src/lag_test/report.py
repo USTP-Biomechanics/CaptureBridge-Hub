@@ -27,8 +27,14 @@ def write_lag_report(
         json.dump(payload, fh, indent=2)
         fh.write("\n")
 
+    extra = extra or {}
     row = {**asdict(timing), **asdict(analysis)}
-    command_timing = (extra or {}).get("command_timing")
+    row.update({
+        key: value
+        for key, value in extra.items()
+        if isinstance(value, (str, int, float, bool)) or value is None
+    })
+    command_timing = extra.get("command_timing")
     if isinstance(command_timing, dict):
         row.update({
             f"command_timing_{key}": value

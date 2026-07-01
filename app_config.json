@@ -40,6 +40,11 @@
     "max_dimension": 1920,
     "socket_buffer_bytes": 4194304
   },
+  "phone_transport": {
+    "mode": "adb_reverse_first",
+    "adb_path": "",
+    "adb_poll_interval_sec": 3
+  },
   "camera_defaults": {
     "preferred_width": 1920,
     "preferred_height": 1080,

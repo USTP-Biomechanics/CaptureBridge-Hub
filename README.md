@@ -278,9 +278,11 @@ responses that include nanosecond fields are logged with a
 readable in milliseconds.
 
 Use the measured offset to decide whether a camera lead is needed for your
-setup. The camera lead shifts the phone-side capture timing earlier by the
-configured number of milliseconds, which can compensate a repeatable start/stop
-delay when the same capture settings and workflow are used.
+setup. Positive camera lead shifts the phone-side video cut later by the
+configured number of milliseconds. For example, a repeatable negative lag-test
+offset means the transferred video starts before the timing target, so a small
+positive lead can bring the cut closer to the target when the same capture
+settings and workflow are used.
 
 For reliable analysis, aim the phone at the right side of the fullscreen timing
 target and make sure the complete green border is visible in the recorded video.
