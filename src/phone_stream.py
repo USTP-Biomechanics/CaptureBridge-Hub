@@ -57,14 +57,17 @@ class PhoneStreamConfig:
             ),
         )
 
-    def build_start_payload(self, host: str) -> str:
+    def build_start_payload(self, host: str, protocol: str = "udp", stream_key: str = "") -> str:
         payload = {
             "host": host,
             "port": self.udp_port,
+            "protocol": protocol,
             "maxFps": self.max_fps,
             "jpegQuality": self.jpeg_quality,
             "maxDimension": self.max_dimension,
         }
+        if stream_key:
+            payload["streamKey"] = stream_key
         return json.dumps(payload, separators=(",", ":"))
 
 
@@ -85,6 +88,7 @@ class UdpPhoneStreamReceiver:
         self._stats_lock = threading.Lock()
         self._stats = {
             "packets": 0,
+            "tcp_connections": 0,
             "valid_packets": 0,
             "invalid_packets": 0,
             "completed_frames": 0,
@@ -114,14 +118,29 @@ class UdpPhoneStreamReceiver:
         self._thread.start()
         self.log(f"Phone stream UDP receiver listening on 0.0.0.0:{self.port}")
 
+        self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.tcp_sock.bind(("0.0.0.0", self.port))
+        self.tcp_sock.listen()
+        self.tcp_sock.settimeout(1.0)
+        self._tcp_thread = threading.Thread(target=self._tcp_loop, daemon=True)
+        self._tcp_thread.start()
+        self.log(f"Phone stream TCP receiver listening on 0.0.0.0:{self.port}")
+
     def close(self):
         self._running = False
         try:
             self.sock.close()
         except OSError:
             pass
+        try:
+            self.tcp_sock.close()
+        except OSError:
+            pass
         if self._thread.is_alive():
             self._thread.join(timeout=1.0)
+        if self._tcp_thread.is_alive():
+            self._tcp_thread.join(timeout=1.0)
 
     def get_stats(self) -> dict:
         with self._stats_lock:
@@ -171,6 +190,96 @@ class UdpPhoneStreamReceiver:
                 self._last_little_endian_log = now
                 self.log("Phone stream detected little-endian preview headers; accepting them.")
             self._handle_packet(source_ip, parsed)
+
+    def _tcp_loop(self):
+        while self._running:
+            try:
+                conn, addr = self.tcp_sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            self._increment_stat("tcp_connections")
+            threading.Thread(
+                target=self._tcp_client_loop,
+                args=(conn, addr),
+                daemon=True,
+            ).start()
+
+    def _tcp_client_loop(self, conn: socket.socket, addr):
+        source_id = addr[0]
+        try:
+            conn.settimeout(5.0)
+            hello = self._read_tcp_line(conn, max_bytes=512)
+            if hello.startswith("STREAM "):
+                requested_source = hello[7:].strip()
+                if requested_source:
+                    source_id = requested_source
+            self.log(f"Phone stream TCP client connected from {addr[0]} as {source_id}")
+
+            while self._running:
+                header = self._read_exact(conn, 4)
+                if header is None:
+                    break
+                packet_size = struct.unpack("!I", header)[0]
+                if packet_size <= 0 or packet_size > 64 * 1024 * 1024:
+                    self.log(f"Phone stream TCP invalid packet size from {source_id}: {packet_size}")
+                    break
+                packet = self._read_exact(conn, packet_size)
+                if packet is None:
+                    break
+
+                now = time.time()
+                self._increment_stat("packets")
+                self._update_stats(last_packet_time=now, last_source_ip=source_id)
+                parsed = self._parse_packet(packet)
+                if parsed is None:
+                    self._increment_stat("invalid_packets")
+                    self._update_stats(last_invalid_size=len(packet))
+                    if now - self._last_invalid_log >= 3.0:
+                        self._last_invalid_log = now
+                        self.log(
+                            "Phone stream received TCP packets that do not match "
+                            f"the expected preview format. Last source={source_id}, bytes={len(packet)}"
+                        )
+                    continue
+
+                self._increment_stat("valid_packets")
+                self._update_stats(
+                    last_valid_packet_time=now,
+                    last_valid_source_ip=source_id,
+                    last_header_endian=parsed.get("header_endian", ""),
+                )
+                self._handle_packet(source_id, parsed)
+        except OSError:
+            pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    @staticmethod
+    def _read_tcp_line(conn: socket.socket, max_bytes: int) -> str:
+        data = bytearray()
+        while len(data) < max_bytes:
+            chunk = conn.recv(1)
+            if not chunk:
+                break
+            if chunk == b"\n":
+                break
+            data.extend(chunk)
+        return data.decode("utf-8", errors="replace").strip()
+
+    @staticmethod
+    def _read_exact(conn: socket.socket, size: int) -> Optional[bytes]:
+        data = bytearray()
+        while len(data) < size:
+            chunk = conn.recv(size - len(data))
+            if not chunk:
+                return None
+            data.extend(chunk)
+        return bytes(data)
 
     def _handle_packet(self, source_ip: str, parsed: dict):
         frame_id = parsed["frame_id"]
@@ -766,20 +875,20 @@ class PhoneStreamPane:
             frame_age = now - stats["last_frame_time"] if stats["last_frame_time"] else None
 
             if stats["packets"] == 0:
-                detail = "No UDP preview packets have reached this PC yet"
+                detail = "No preview packets have reached this PC yet"
             elif stats["valid_packets"] == 0:
                 detail = (
-                    "UDP packets are arriving, but not in the expected preview format "
+                    "Preview packets are arriving, but not in the expected preview format "
                     f"(last from {stats['last_source_ip']}, {stats['last_invalid_size']} bytes)"
                 )
             elif stats["completed_frames"] == 0:
                 detail = (
-                    "UDP preview chunks are arriving, but no complete JPEG frame has assembled "
+                    "Preview chunks are arriving, but no complete JPEG frame has assembled "
                     f"yet (last from {stats['last_valid_source_ip']})"
                 )
             else:
                 detail = (
-                    f"UDP ok: {stats['completed_frames']} frames, "
+                    f"Preview ok: {stats['completed_frames']} frames, "
                     f"last from {stats['last_valid_source_ip']}"
                 )
 
@@ -801,20 +910,20 @@ class PhoneStreamPane:
 
         self._status_after_id = self.frame.after(1000, self._poll_receiver_status)
 
-    def _on_frame(self, source_ip: str, jpeg_bytes: bytes, meta: dict):
+    def _on_frame(self, source_id: str, jpeg_bytes: bytes, meta: dict):
         if self.closed or self.display_suspended:
             return
         try:
             self.root.after(
                 0,
-                lambda source_ip=source_ip, jpeg_bytes=jpeg_bytes, meta=meta: (
-                    self._dispatch_frame(source_ip, jpeg_bytes, meta)
+                lambda source_id=source_id, jpeg_bytes=jpeg_bytes, meta=meta: (
+                    self._dispatch_frame(source_id, jpeg_bytes, meta)
                 ),
             )
         except tk.TclError:
             pass
 
-    def _dispatch_frame(self, source_ip: str, jpeg_bytes: bytes, meta: dict):
+    def _dispatch_frame(self, source_id: str, jpeg_bytes: bytes, meta: dict):
         if self.closed:
             return
 
@@ -822,7 +931,8 @@ class PhoneStreamPane:
             (
                 client
                 for client in self.clients_by_key.values()
-                if client.get("addr", ("", 0))[0] == source_ip
+                if client.get("key") == source_id
+                or client.get("addr", ("", 0))[0] == source_id
             ),
             None,
         )
@@ -840,8 +950,8 @@ class PhoneStreamPane:
                     )
                 )
                 self.log(
-                    "Phone stream received a complete UDP frame from an unknown source "
-                    f"{source_ip}. Connected phone IPs: {known_sources or 'none'}"
+                    "Phone stream received a complete frame from an unknown source "
+                    f"{source_id}. Connected phone sources: {known_sources or 'none'}"
                 )
             return
 
@@ -851,8 +961,8 @@ class PhoneStreamPane:
             if now - self._last_missing_panel_log >= 3.0:
                 self._last_missing_panel_log = now
                 self.log(
-                    "Phone stream received a UDP frame, but that phone is not enabled: "
-                    f"{source_ip}"
+                    "Phone stream received a frame, but that phone is not enabled: "
+                    f"{source_id}"
                 )
             return
         panel.submit_frame(jpeg_bytes, meta)

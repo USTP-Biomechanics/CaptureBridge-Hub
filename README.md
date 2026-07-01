@@ -267,22 +267,18 @@ Stream settings live under `phone_stream` in [app_config.json](app_config.json):
 
 ## Lag Test
 
-Select a phone in `Connected phones`, set the camera lead in milliseconds next
-to `Lag Test` if needed, and press `Lag Test` to measure capture start/stop
-latency for the specific phone, camera mode, lighting, network, and trigger
-setup in use. The hub prepares the selected phone, opens a fullscreen timing
-target, sends scheduled `START` and `STOP` commands, transfers the test video,
-and writes JSON/CSV lag reports next to the transferred MP4. Phone timing
+Select a phone in `Connected phones` and press `Lag Test` to measure capture
+start/stop latency for the specific phone, camera mode, lighting, network, and
+trigger setup in use. The hub prepares the selected phone, opens a fullscreen
+timing target, sends scheduled `START` and `STOP` commands, transfers the test
+video, and writes JSON/CSV lag reports next to the transferred MP4. Phone timing
 responses that include nanosecond fields are logged with a
 `phone_rx_tx_delta_ms` value so the phone-side receive-to-transmit time is
 readable in milliseconds.
 
-Use the measured offset to decide whether a camera lead is needed for your
-setup. Positive camera lead shifts the phone-side video cut later by the
-configured number of milliseconds. For example, a repeatable negative lag-test
-offset means the transferred video starts before the timing target, so a small
-positive lead can bring the cut closer to the target when the same capture
-settings and workflow are used.
+Lag reports include command timing, phone-clock target fields, segment cut
+offsets, and analyzer frame timing. Use those fields to separate transport
+timing problems from camera-frame selection or visual target analysis issues.
 
 For reliable analysis, aim the phone at the right side of the fullscreen timing
 target and make sure the complete green border is visible in the recorded video.

@@ -260,7 +260,7 @@ Verification completed:
   - Phone receive duration exactly matched requested segment duration in the segment JSON.
   - Segment cut offsets were small: start average about `+0.25 ms`, end average about `+10 ms` for the 60 fps runs.
   - Remaining CSV lag is dominated by visual timecode/display/camera-frame quantization rather than transport or encoder cut timing.
-- README camera-lead wording was corrected: positive camera lead shifts the phone-side video cut later, so a repeatable negative lag-test offset can be compensated with a small positive lead.
+- Superseded: the manual camera-lead workaround was removed; remaining lag-test offsets should be investigated from report diagnostics rather than compensated manually.
 
 # CaptureBridge Timing Sync, Jitter Measurement, and Camera Error Plan
 
@@ -484,3 +484,110 @@ Verification completed:
   - Phone sent `TRANSPORT usb_adb_reverse host=127.0.0.1`.
   - Phone replied to `SYNC` with `SYNC_OK seq=1 ... phone_rx_ns=... phone_tx_ns=...`.
 - [x] Hub sync math smoke test passed with synthetic timestamps.
+
+## Latest Lag-Test Analysis, 2026-07-01 15:45-15:53
+
+- [x] Parsed 17 new lag-test reports from `LagTests`.
+- [x] Scheduled mode was active in all 17 reports.
+- [x] USB ADB reverse reports: 6.
+  - Best RTT mean about `1.29 ms`.
+  - RTT p95 median about `5.53 ms`.
+  - Offset jitter median about `0.14 ms`.
+  - Visual start lag median about `-16 ms`.
+  - Visual stop lag median about `-11 ms`.
+  - Phone requested duration was exactly `1,000,000 us` in every parsed report.
+- [x] Wi-Fi reports: 11.
+  - Best RTT mean about `5.11 ms`.
+  - RTT p95 median about `11.53 ms`, with one spike near `97.71 ms`.
+  - Offset jitter median about `0.37 ms`.
+  - Visual start lag median about `-15 ms`.
+  - Visual stop lag median about `-15 ms`.
+  - Phone requested duration was exactly `1,000,000 us` in every parsed report.
+- [x] Transport jitter was visible in Wi-Fi ACKs.
+  - Some `START_AT` commands arrived about `+315 ms` after the requested target.
+  - Some `STOP_AT` commands arrived about `+236 ms` after the requested target.
+  - The rolling buffer still cut the requested 1 second phone-time segment.
+- [x] Remaining lag appears dominated by visual/analyzer/frame quantization and camera-frame selection, not command transport duration.
+
+Follow-up implementation note:
+
+- [ ] Do not implement scheduled lag-test countdown delay for now.
+  - A few Wi-Fi reports show `START_AT` target already in the past by about `315-331 ms`.
+  - The rolling buffer saved those runs, but planned lag tests should normally send `START_AT` before the target.
+  - User decision: leave this as-is because the rolling buffer behavior is acceptable.
+- [x] Add unified scheduled capture path for Hub START/STOP.
+  - Hardware START/STOP and manual Hub START/STOP now use target-clock commands when phone time sync is usable.
+  - On Arduino/hardware START, timestamp the Hub event with `time.perf_counter_ns()`, map that event time into phone elapsed time with the active sync offset, and send `START_AT`.
+  - On Arduino/hardware STOP, timestamp the Hub event, map to phone elapsed time, and send `STOP_AT`.
+  - On manual UI START/STOP, timestamp the Hub button event with `time.perf_counter_ns()`, map it to phone elapsed time, and send `START_AT`/`STOP_AT`.
+  - Lag tests already use the same conversion with planned future visual target timestamps.
+  - This compensates post-event transport jitter as long as the phone was prepared and the rolling buffer still covers the event time.
+  - If a client has no usable time sync, Hub falls back to immediate `START`/`STOP` for that client and logs the fallback.
+  - Hub now keeps sending periodic `SYNC` samples while each phone is connected, so hardware triggers have a fresh offset estimate available before the event.
+  - Verification: Hub compile passed with `.venv\Scripts\python.exe -m py_compile src\tcp_arduino_sync.py src\android_adb.py src\lag_test\report.py`.
+- [x] Avoid redundant lag-test sync bursts.
+  - Lag test now uses fresh, usable background time sync immediately.
+  - It only runs the extra lag-test sync burst when background sync is missing, stale, or not usable.
+  - Verification: Hub compile passed with `.venv\Scripts\python.exe -m py_compile src\tcp_arduino_sync.py src\android_adb.py src\lag_test\report.py`.
+- [x] Restore Android preview for 240 fps/high-speed mode.
+  - Android high-speed capture no longer forces encoder-only output.
+  - The constrained high-speed session now includes the TextureView preview surface again when possible.
+  - Verification: Android `.\gradlew.bat assembleDebug` passed with Android Studio JBR.
+  - Debug APK installed successfully after ADB reconnected.
+  - App launch showed clean `CaptureBridgeCamera` open logs for the default camera mode.
+
+# USB Live Preview Streaming Fix
+
+## Problem
+
+- [x] Control works over USB through ADB reverse TCP `6000`.
+- [x] Live preview still uses UDP `6101`.
+- [x] ADB reverse does not tunnel UDP, so preview frames cannot reach the Hub over the USB transport as implemented.
+
+## Plan
+
+- [x] Trace the Hub preview receiver and Android preview sender.
+- [x] Add a USB-compatible preview path without breaking Wi-Fi UDP streaming.
+- [x] Keep Wi-Fi behavior unchanged for existing phones and fallback cases.
+- [x] Compile/smoke-test the Hub and Android code paths.
+
+## Review
+
+- Hub now starts a TCP preview receiver on the configured preview port while preserving the existing UDP receiver.
+- Hub routes TCP preview frames by an explicit `streamKey`, so USB/ADB localhost traffic maps to the selected phone instead of guessing by source IP.
+- Hub sends USB-connected phones `LIVE_PREVIEW_START` with `protocol=tcp`, `host=127.0.0.1`, and the current client key; Wi-Fi phones still receive the UDP payload.
+- Hub ADB setup now reverses both control TCP `6000` and preview TCP `6101` when live preview is enabled.
+- Android `PhoneLivePreviewStreamer` now accepts `protocol=udp|tcp`; UDP keeps the existing datagram behavior, TCP connects to the requested host/port and sends the same `FL3D` packets with a 4-byte length prefix.
+- Verification passed:
+  - Hub compile: `.venv\Scripts\python.exe -m py_compile src\tcp_arduino_sync.py src\phone_stream.py src\android_adb.py`.
+  - Android build: `JAVA_HOME=C:\Program Files\Android\Android Studio\jbr; .\gradlew.bat assembleDebug`.
+  - Hub TCP preview receiver smoke test passed with a synthetic `FL3D` frame and `STREAM test-client`.
+  - ADB reverse was created for connected phone `R3GYB09WECE` on both `tcp:6000` and `tcp:6101`.
+  - Debug APK installed successfully from `build\outputs\apk\debug\CaptureBridge-debug.apk`.
+- Real-device temporary-listener smoke reached the phone over USB and confirmed the app reported `TRANSPORT usb_adb_reverse`, but did not produce a real preview frame outside the full Hub UI. One run was rejected as `STREAM_SETUP_FAILED`, likely because the temporary harness requested preview before the camera session settled; a delayed run had the temporary control socket close before the request completed.
+
+# Remove Manual Lag-Test Camera Lead
+
+## Decision
+
+- [x] Do not compensate the remaining early-start lag with a user-entered camera lead.
+- [x] Keep scheduled command lead internal; it is only transport send-ahead, not a cut-time correction.
+- [x] Remove the manual camera lead field from the Hub UI.
+- [x] Force lag-test `cameraLeadMs` to `0.0`.
+- [x] Update docs so the remaining early-start lag is framed as a root-cause investigation.
+- [x] Compile Hub after removal.
+
+## Root-Cause Notes
+
+- Newest reports show scheduled commands enabled and phone receive duration matching the 1000 ms target.
+- Start visual lag is still usually about `-15 ms`; stop lag is smaller, around `-7.5 ms` median in the newest batch.
+- Segment `chosen_start_offset_us` is already near zero, so the early visual result is probably not from command transport or the segment cut timestamp itself.
+
+## Review
+
+- Removed the `Lead:` lag-test field from the Hub phone header.
+- Removed persisted `phone_start_lead_ms` from `capturebridge_state.json`.
+- Lag-test `PREPARE` now always sends `cameraLeadMs: 0.0`.
+- Renamed scheduled command timing from `lead` to `send_ahead` in logs, sync summaries, session state, and new lag reports.
+- README now describes lag-test diagnostics instead of camera-lead compensation.
+- Verification passed after the send-ahead rename: `.venv\Scripts\python.exe -m py_compile src\tcp_arduino_sync.py src\phone_stream.py src\android_adb.py`.

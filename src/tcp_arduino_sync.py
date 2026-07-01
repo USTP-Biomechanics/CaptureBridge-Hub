@@ -52,12 +52,13 @@ LAG_TEST_COMMAND_TIMING_TOLERANCE_MS = 25.0
 TIME_SYNC_CONNECT_BURST_COUNT = 20
 TIME_SYNC_LAG_TEST_BURST_COUNT = 10
 TIME_SYNC_BURST_INTERVAL_MS = 50
+TIME_SYNC_IDLE_INTERVAL_SEC = 1.0
 TIME_SYNC_MAX_SAMPLE_AGE_SEC = 10.0
 TIME_SYNC_MAX_BEST_RTT_MS = 250.0
 TIME_SYNC_MIN_SAMPLES_FOR_SCHEDULED = 3
-SCHEDULED_COMMAND_MIN_LEAD_MS = 150.0
+SCHEDULED_COMMAND_MIN_SEND_AHEAD_MS = 150.0
 SCHEDULED_COMMAND_SAFETY_MARGIN_MS = 100.0
-SCHEDULED_COMMAND_MAX_LEAD_MS = 900.0
+SCHEDULED_COMMAND_MAX_SEND_AHEAD_MS = 900.0
 LAG_TEST_TRANSFER_ROOT = "LagTests"
 CAPTURE_STOP_OK_TIMEOUT_MS = 20000
 CAPTURE_READY_TIMEOUT_MS = 3000
@@ -421,11 +422,8 @@ def _format_phone_lifecycle_for_log(cmd: str, rest: str) -> str:
 
     if cmd == "PREPARE_OK":
         preroll = fields.get("preroll_ms")
-        lead = fields.get("camera_lead_ms")
         if preroll is not None:
             parts.append(f"preroll={preroll} ms")
-        if lead is not None:
-            parts.append(f"lead={lead} ms")
 
     return " ".join(part for part in parts if part)
 
@@ -597,15 +595,15 @@ class ClientTimeSync:
             and best.rtt_ms <= TIME_SYNC_MAX_BEST_RTT_MS
         )
 
-    def scheduled_lead_ms(self) -> float:
+    def scheduled_send_ahead_ms(self) -> float:
         samples = self.recent_samples()
         if not samples:
             samples = list(self.samples[-20:])
         rtts = [sample.rtt_ms for sample in samples]
         p95 = _percentile(rtts, 95.0)
-        basis = float(p95) if p95 is not None else SCHEDULED_COMMAND_MIN_LEAD_MS
-        lead = max(SCHEDULED_COMMAND_MIN_LEAD_MS, basis + SCHEDULED_COMMAND_SAFETY_MARGIN_MS)
-        return min(SCHEDULED_COMMAND_MAX_LEAD_MS, lead)
+        basis = float(p95) if p95 is not None else SCHEDULED_COMMAND_MIN_SEND_AHEAD_MS
+        send_ahead = max(SCHEDULED_COMMAND_MIN_SEND_AHEAD_MS, basis + SCHEDULED_COMMAND_SAFETY_MARGIN_MS)
+        return min(SCHEDULED_COMMAND_MAX_SEND_AHEAD_MS, send_ahead)
 
     def summary(self) -> dict:
         samples = self.recent_samples()
@@ -632,7 +630,11 @@ class ClientTimeSync:
             "offset_ms": None if best is None else best.offset_ns / 1_000_000.0,
             "offset_median_ms": median_offset,
             "offset_jitter_median_ms": offset_jitter,
-            "lead_ms": self.scheduled_lead_ms() if samples else SCHEDULED_COMMAND_MIN_LEAD_MS,
+            "send_ahead_ms": (
+                self.scheduled_send_ahead_ms()
+                if samples
+                else SCHEDULED_COMMAND_MIN_SEND_AHEAD_MS
+            ),
             "latest_age_sec": None if not samples else time.perf_counter() - samples[-1].recorded_perf,
         }
 
@@ -653,7 +655,7 @@ class HubLagTestSession:
     start_command_elapsed_ms: Optional[float] = None
     stop_command_elapsed_ms: Optional[float] = None
     scheduled_commands_enabled: bool = False
-    scheduled_command_lead_ms: Optional[float] = None
+    scheduled_command_send_ahead_ms: Optional[float] = None
     sync_summary: Optional[dict] = None
     start_target_phone_ns: Optional[int] = None
     stop_target_phone_ns: Optional[int] = None
@@ -1147,7 +1149,7 @@ def load_app_config() -> Tuple[dict, List[str]]:
 # Arduino controller
 # -----------------------------------
 class ArduinoController:
-    def __init__(self, log_callback, command_callback: Optional[Callable[[str], None]] = None):
+    def __init__(self, log_callback, command_callback: Optional[Callable[[str, int], None]] = None):
         self.ser: Optional[serial.Serial] = None
         self.log = log_callback
         self.command_callback = command_callback
@@ -1378,13 +1380,14 @@ class ArduinoController:
         self._incoming_buffer = ""
 
     def _handle_incoming_text(self, raw_text: str):
+        event_perf_ns = time.perf_counter_ns()
         command = self._normalize_command(raw_text)
         if not command:
             return
 
         self.log(f"Received from Arduino: {command}")
         if self.command_callback:
-            self.command_callback(command)
+            self.command_callback(command, event_perf_ns)
 
     @staticmethod
     def _normalize_command(raw_text: str) -> Optional[str]:
@@ -1489,6 +1492,7 @@ class TcpServer:
             threading.Thread(target=self._client_send_loop, args=(client,), daemon=True).start()
             threading.Thread(target=self.client_loop, args=(client,), daemon=True).start()
             self.send_time_sync_burst(client, TIME_SYNC_CONNECT_BURST_COUNT)
+            threading.Thread(target=self._client_time_sync_loop, args=(client,), daemon=True).start()
 
     def client_loop(self, client):
         conn = client["conn"]
@@ -1890,6 +1894,13 @@ class TcpServer:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _client_time_sync_loop(self, client):
+        while not client.get("closed"):
+            time.sleep(max(0.1, TIME_SYNC_IDLE_INTERVAL_SEC))
+            if client.get("closed"):
+                break
+            self.send_time_sync_sample(client)
+
     def send_name_to_unacked(self, name: str) -> int:
         data = f"NAME {name}\n".encode("utf-8")
         send_count = 0
@@ -2119,35 +2130,6 @@ class App:
             command=self.toggle_phone_connection,
         )
         self.phone_disconnect_btn.pack(side=tk.RIGHT, padx=(4, 0))
-
-        tk.Label(clients_header_frame, text="ms").pack(side=tk.RIGHT, padx=(2, 6))
-        initial_lead_ms = self._normalize_phone_start_lead_ms(
-            self.app_state.get("phone_start_lead_ms", 0.0),
-            persist=False,
-        )
-        self.phone_start_lead_ms_var = tk.StringVar(
-            value=compact_float_text(initial_lead_ms, precision=1)
-        )
-        self.phone_start_lead_ms_entry = tk.Entry(
-            clients_header_frame,
-            width=5,
-            textvariable=self.phone_start_lead_ms_var,
-        )
-        self.phone_start_lead_ms_entry.pack(side=tk.RIGHT)
-        self.phone_start_lead_ms_entry.bind(
-            "<FocusOut>",
-            lambda _event: self._normalize_phone_start_lead_ms(
-                self.phone_start_lead_ms_var.get()
-            ),
-        )
-        self.phone_start_lead_ms_entry.bind(
-            "<Return>",
-            lambda _event: (
-                self._normalize_phone_start_lead_ms(self.phone_start_lead_ms_var.get()),
-                "break",
-            )[-1],
-        )
-        tk.Label(clients_header_frame, text="Lead:").pack(side=tk.RIGHT, padx=(6, 2))
 
         self.lag_test_btn = tk.Button(
             clients_header_frame,
@@ -3722,7 +3704,16 @@ class App:
         if not client:
             return
 
-        host = self.get_phone_stream_host_for_client(client)
+        transport = str(client.get("transport") or "").lower()
+        if transport == "usb_adb_reverse":
+            host = "127.0.0.1"
+            protocol = "tcp"
+            stream_key = client["key"]
+        else:
+            host = self.get_phone_stream_host_for_client(client)
+            protocol = "udp"
+            stream_key = ""
+
         if host == SERVER_HOST:
             self.phone_stream_states_by_client[client["key"]] = "Unable to resolve PC LAN address"
             self.log(f"Phone stream host resolution failed for {client['addr'][0]}")
@@ -3733,7 +3724,11 @@ class App:
                 )
             return
 
-        payload = self.phone_stream_config.build_start_payload(host)
+        payload = self.phone_stream_config.build_start_payload(
+            host,
+            protocol=protocol,
+            stream_key=stream_key,
+        )
         self.phone_stream_states_by_client[client["key"]] = "Requested"
         self.tcp.send_to_client(client, f"LIVE_PREVIEW_START {payload}")
         self.log(f"Sent to {client['addr'][0]}: LIVE_PREVIEW_START {payload}")
@@ -3909,13 +3904,22 @@ class App:
         for device in ready_devices:
             if device.serial in self.adb_reverse_serials:
                 continue
-            reverse = android_adb.setup_reverse(adb_path, device.serial, SERVER_PORT, SERVER_PORT)
             label = android_adb.model_label(device)
-            if reverse.ok:
+            reverse = android_adb.setup_reverse(adb_path, device.serial, SERVER_PORT, SERVER_PORT)
+            stream_reverse = None
+            if reverse.ok and self.phone_stream_enabled:
+                stream_port = int(getattr(self.phone_stream_config, "udp_port", 6101))
+                stream_reverse = android_adb.setup_reverse(adb_path, device.serial, stream_port, stream_port)
+
+            if reverse.ok and (stream_reverse is None or stream_reverse.ok):
                 self.adb_reverse_serials.add(device.serial)
-                self.log(f"ADB reverse ready for {label} ({device.serial}) on tcp:{SERVER_PORT}")
+                ports = [str(SERVER_PORT)]
+                if stream_reverse is not None:
+                    ports.append(str(int(getattr(self.phone_stream_config, "udp_port", 6101))))
+                self.log(f"ADB reverse ready for {label} ({device.serial}) on tcp:{', tcp:'.join(ports)}")
             else:
-                self.log(f"ADB reverse failed for {label} ({device.serial}): {reverse.error}")
+                error = reverse.error if not reverse.ok else stream_reverse.error
+                self.log(f"ADB reverse failed for {label} ({device.serial}): {error}")
 
         self.adb_ready_serials = ready_serials
         status = f"ADB: {android_adb.device_summary(devices)}"
@@ -3938,6 +3942,12 @@ class App:
         adb_path = self.adb_path
         if adb_path:
             android_adb.remove_reverse(adb_path, serial, SERVER_PORT)
+            if self.phone_stream_enabled:
+                android_adb.remove_reverse(
+                    adb_path,
+                    serial,
+                    int(getattr(self.phone_stream_config, "udp_port", 6101)),
+                )
         self.adb_reverse_serials.discard(serial)
 
     def _remove_all_adb_reverses(self):
@@ -4905,30 +4915,6 @@ class App:
         self._set_lag_test_status(f"Preparing selected camera mode for {label}")
         self._lag_test_prepare_camera_mode()
 
-    def get_phone_start_lead_ms(self) -> float:
-        if hasattr(self, "phone_start_lead_ms_var"):
-            return self._normalize_phone_start_lead_ms(self.phone_start_lead_ms_var.get())
-        return self._normalize_phone_start_lead_ms(
-            self.app_state.get("phone_start_lead_ms", 0.0),
-            persist=False,
-        )
-
-    def _normalize_phone_start_lead_ms(self, raw, persist: bool = True) -> float:
-        try:
-            value = float(str(raw).strip())
-        except Exception:
-            value = 0.0
-        value = max(0.0, min(value, 5000.0))
-        if hasattr(self, "phone_start_lead_ms_var"):
-            self.phone_start_lead_ms_var.set(compact_float_text(value, precision=1))
-        if persist:
-            self.app_state["phone_start_lead_ms"] = value
-            try:
-                save_app_state(self.app_state)
-            except Exception as exc:
-                self.log(f"Could not save camera lead setting: {exc}")
-        return value
-
     def _lag_test_current_camera_profile(self, payload: dict) -> Optional[dict]:
         profile = self.build_camera_profile_from_current(payload)
         if profile is None:
@@ -5002,7 +4988,7 @@ class App:
         prepare_payload = json.dumps(
             {
                 "prerollMs": LAG_TEST_PHONE_PREROLL_MS,
-                "cameraLeadMs": self.get_phone_start_lead_ms(),
+                "cameraLeadMs": 0.0,
             },
             separators=(",", ":"),
         )
@@ -5021,7 +5007,23 @@ class App:
         client = self._lag_test_client()
         if session is None or session.client_key != client_key or client is None or self.tcp is None:
             return
-        self._set_lag_test_status("Phone prepared; measuring transport jitter")
+        sync = client.get("time_sync")
+        if isinstance(sync, ClientTimeSync):
+            summary = sync.summary()
+            latest_age_sec = summary.get("latest_age_sec")
+            if sync.is_usable() and latest_age_sec is not None and latest_age_sec <= TIME_SYNC_IDLE_INTERVAL_SEC * 2.5:
+                self._set_lag_test_status("Phone prepared; using fresh background time sync")
+                self.log(
+                    "Lag test using background time sync: "
+                    f"samples={summary.get('sample_count')}, "
+                    f"best_rtt={summary.get('best_rtt_ms'):.2f} ms, "
+                    f"p95_rtt={summary.get('rtt_p95_ms'):.2f} ms, "
+                    f"age={latest_age_sec:.2f} s"
+                )
+                self._lag_test_start_countdown(client_key)
+                return
+
+        self._set_lag_test_status("Phone prepared; refreshing transport sync")
         self.tcp.send_time_sync_burst(client, TIME_SYNC_LAG_TEST_BURST_COUNT)
         wait_ms = TIME_SYNC_LAG_TEST_BURST_COUNT * TIME_SYNC_BURST_INTERVAL_MS + 200
         self.root.after(wait_ms, lambda key=client_key: self._lag_test_start_countdown(key))
@@ -5047,14 +5049,14 @@ class App:
         display_start_ns = int(session.display_started_perf * 1_000_000_000)
         session.start_target_phone_ns = display_start_ns + int(LAG_TEST_START_TARGET_MS * 1_000_000) + offset_ns
         session.stop_target_phone_ns = display_start_ns + int(LAG_TEST_STOP_TARGET_MS * 1_000_000) + offset_ns
-        session.scheduled_command_lead_ms = sync.scheduled_lead_ms()
+        session.scheduled_command_send_ahead_ms = sync.scheduled_send_ahead_ms()
         session.scheduled_commands_enabled = True
         best_rtt = summary.get("best_rtt_ms")
         p95_rtt = summary.get("rtt_p95_ms")
         offset_ms = summary.get("offset_ms")
         self.log(
             "Lag test scheduled phone cuts enabled: "
-            f"lead={session.scheduled_command_lead_ms:.1f} ms, "
+            f"send_ahead={session.scheduled_command_send_ahead_ms:.1f} ms, "
             f"best_rtt={0.0 if best_rtt is None else best_rtt:.2f} ms, "
             f"p95_rtt={0.0 if p95_rtt is None else p95_rtt:.2f} ms, "
             f"offset={0.0 if offset_ms is None else offset_ms:+.2f} ms"
@@ -5095,7 +5097,10 @@ class App:
             )
 
         if session.scheduled_commands_enabled:
-            lead_ms = float(session.scheduled_command_lead_ms or SCHEDULED_COMMAND_MIN_LEAD_MS)
+            send_ahead_ms = float(
+                session.scheduled_command_send_ahead_ms
+                or SCHEDULED_COMMAND_MIN_SEND_AHEAD_MS
+            )
             self.root.after(
                 self._lag_test_delay_until_ms(session, LAG_TEST_START_TARGET_MS),
                 lambda key=session.client_key, label=session.label: self._lag_test_set_display_phase(key, label, "START"),
@@ -5105,11 +5110,11 @@ class App:
                 lambda key=session.client_key, label=session.label: self._lag_test_set_display_phase(key, label, "STOP"),
             )
             self.root.after(
-                self._lag_test_delay_until_ms(session, LAG_TEST_START_TARGET_MS - lead_ms),
+                self._lag_test_delay_until_ms(session, LAG_TEST_START_TARGET_MS - send_ahead_ms),
                 lambda key=session.client_key, label=session.label: self._lag_test_send_start(key, label),
             )
             self.root.after(
-                self._lag_test_delay_until_ms(session, LAG_TEST_STOP_TARGET_MS - lead_ms),
+                self._lag_test_delay_until_ms(session, LAG_TEST_STOP_TARGET_MS - send_ahead_ms),
                 lambda key=session.client_key, label=session.label: self._lag_test_send_stop(key, label),
             )
             return
@@ -5385,7 +5390,7 @@ class App:
                     "actual_start_command_elapsed_ms": session.actual_start_command_elapsed_ms,
                     "actual_stop_command_elapsed_ms": session.actual_stop_command_elapsed_ms,
                     "scheduled_commands_enabled": session.scheduled_commands_enabled,
-                    "scheduled_command_lead_ms": session.scheduled_command_lead_ms,
+                    "scheduled_command_send_ahead_ms": session.scheduled_command_send_ahead_ms,
                     "start_target_phone_ns": session.start_target_phone_ns,
                     "stop_target_phone_ns": session.stop_target_phone_ns,
                     "time_sync": session.sync_summary,
@@ -5582,9 +5587,53 @@ class App:
         except Exception:
             return "n/a"
 
+    def _client_phone_target_ns(self, client, hub_event_perf_ns: int) -> Tuple[Optional[int], Optional[dict]]:
+        sync = client.get("time_sync") if client else None
+        if not isinstance(sync, ClientTimeSync) or not sync.is_usable():
+            return None, None
+        offset_ns = sync.best_offset_ns()
+        if offset_ns is None:
+            return None, sync.summary()
+        return int(hub_event_perf_ns) + int(offset_ns), sync.summary()
+
+    def _send_phone_capture_command(self, command: str, trigger_source: str, hub_event_perf_ns: Optional[int]) -> None:
+        if self.tcp is None:
+            return
+        command = command.upper()
+        use_target_clock = hub_event_perf_ns is not None and command in ("START", "STOP")
+        if not use_target_clock:
+            self.tcp.broadcast(command)
+            return
+
+        sent_scheduled = 0
+        sent_immediate = 0
+        for client in list(self.client_entries):
+            target_phone_ns, sync_summary = self._client_phone_target_ns(client, int(hub_event_perf_ns))
+            if target_phone_ns is None:
+                self.tcp.send_to_client(client, command)
+                sent_immediate += 1
+                self.log(
+                    f"{command} sent immediate to {self.get_transfer_client_label(client)} "
+                    f"({trigger_source}; phone time sync not usable)"
+                )
+                continue
+            scheduled_command = f"{command}_AT phone_elapsed_ns={target_phone_ns}"
+            self.tcp.send_to_client(client, scheduled_command)
+            sent_scheduled += 1
+            self.log(
+                f"{command}_AT sent to {self.get_transfer_client_label(client)} "
+                f"({trigger_source}; best_rtt={sync_summary.get('best_rtt_ms'):.2f} ms, "
+                f"offset={sync_summary.get('offset_ms'):+.2f} ms)"
+            )
+        if sent_scheduled or sent_immediate:
+            self.log(
+                f"{command} trigger {trigger_source}: "
+                f"scheduled={sent_scheduled}, immediate_fallback={sent_immediate}"
+            )
+
     # ------- button callbacks -------
 
-    def start_capture(self, trigger_source="UI", send_to_arduino=True):
+    def start_capture(self, trigger_source="UI", send_to_arduino=True, trigger_perf_ns: Optional[int] = None):
         if self.tcp is None:
             self.log(f"Phone connection is off; START blocked ({trigger_source})")
             return False
@@ -5606,7 +5655,9 @@ class App:
         if generated_name is None:
             return False
 
-        self.tcp.broadcast("START")
+        if trigger_perf_ns is None:
+            trigger_perf_ns = time.perf_counter_ns()
+        self._send_phone_capture_command("START", trigger_source, trigger_perf_ns)
         if send_to_arduino:
             self.arduino.start()
         self.active_capture_name = generated_name
@@ -5614,7 +5665,7 @@ class App:
         self.update_start_stop_buttons()
         return True
 
-    def stop_capture(self, trigger_source="UI", send_to_arduino=True):
+    def stop_capture(self, trigger_source="UI", send_to_arduino=True, trigger_perf_ns: Optional[int] = None):
         if self.tcp is None:
             self.log(f"Phone connection is off; STOP blocked ({trigger_source})")
             return False
@@ -5625,7 +5676,9 @@ class App:
             self.log(f"Transfer in progress; STOP blocked ({trigger_source})")
             return False
 
-        self.tcp.broadcast("STOP")
+        if trigger_perf_ns is None:
+            trigger_perf_ns = time.perf_counter_ns()
+        self._send_phone_capture_command("STOP", trigger_source, trigger_perf_ns)
         if send_to_arduino:
             self.arduino.stop()
         completed_capture_name = self.active_capture_name or self.build_generated_name(
@@ -5636,19 +5689,22 @@ class App:
         self._begin_pending_capture_completion(completed_capture_name)
         return True
 
-    def on_arduino_serial_command(self, command: str):
+    def on_arduino_serial_command(self, command: str, event_perf_ns: Optional[int] = None):
         try:
-            self.root.after(0, lambda cmd=command: self.handle_arduino_serial_command(cmd))
+            self.root.after(
+                0,
+                lambda cmd=command, perf_ns=event_perf_ns: self.handle_arduino_serial_command(cmd, perf_ns),
+            )
         except tk.TclError:
             pass
 
-    def handle_arduino_serial_command(self, command: str):
+    def handle_arduino_serial_command(self, command: str, event_perf_ns: Optional[int] = None):
         if not self.serial_arm_enabled:
             return
         if command == "START":
-            self.start_capture(trigger_source="USB", send_to_arduino=False)
+            self.start_capture(trigger_source="USB", send_to_arduino=False, trigger_perf_ns=event_perf_ns)
         elif command == "STOP":
-            self.stop_capture(trigger_source="USB", send_to_arduino=False)
+            self.stop_capture(trigger_source="USB", send_to_arduino=False, trigger_perf_ns=event_perf_ns)
 
     def on_toggle_arm(self):
         if self.serial_arm_enabled:
