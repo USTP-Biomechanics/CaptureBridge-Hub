@@ -1,11 +1,11 @@
 # CaptureBridge Hub
 
-CaptureBridge is a local-network acquisition system for smartphone-based
+CaptureBridge is a local or USB-connected acquisition system for smartphone-based
 markerless motion-analysis workflows. CaptureBridge Hub is the Windows desktop
-control app: it connects to compatible iOS and Android clients, keeps capture
-names and camera settings aligned, starts and stops all phones together,
-transfers recordings back to the PC, and can bridge trigger events to Arduino
-and Vicon lab workflows.
+control app: it connects to compatible iOS and Android clients over local
+network or USB/ADB reverse transport, keeps capture names and camera settings
+aligned, starts and stops all phones together, transfers recordings back to the
+PC, and can bridge trigger events to Arduino and Vicon lab workflows.
 
 The goal is repeatable acquisition, not a locked-in analysis algorithm. The Hub
 collects organized phone videos and metadata that can be used downstream with
@@ -15,8 +15,8 @@ inverse-kinematics pipelines.
 
 ![CaptureBridge Hub system architecture](docs/images/architecturefigure1.png)
 
-_Figure 1. CaptureBridge Hub coordinates Android phones over the local network
-and can bridge external trigger systems through Arduino._
+_Figure 1. CaptureBridge Hub coordinates Android phones over USB or the local
+network and can bridge external trigger systems through Arduino._
 
 ## Companion Android App
 
@@ -26,10 +26,11 @@ client. For normal lab use, download the Android APK from the
 The phone app source lives in
 [USTP-Biomechanics/CaptureBridge-Android](https://github.com/USTP-Biomechanics/CaptureBridge-Android).
 
-Important network note: the PC and phones usually need to be on the same
-private Wi-Fi or LAN, Windows should use the Private network profile, and
-firewall exceptions are commonly required for TCP `6000`, UDP `6000`, and the
-phone streaming UDP port `6101`.
+Important connection note: the Hub can connect to Android phones over USB with
+ADB reverse port forwarding, or over the local Wi-Fi/LAN discovery path. Wi-Fi
+use usually needs the PC and phones on the same private network, Windows should
+use the Private network profile, and firewall exceptions are commonly required
+for TCP `6000`, UDP `6000`, and the phone streaming UDP port `6101`.
 
 ## Quick Start
 
@@ -50,7 +51,8 @@ not require Python or internet access on the lab PC.
    and copy it to the phone if needed.
 4. Install the downloaded APK on the phone. If Android asks, allow installing
    this APK from the file manager or browser you are using.
-5. Put the PC and phone on the same private Wi-Fi or LAN.
+5. Connect the phone over USB with USB debugging enabled, or put the PC and
+   phone on the same private Wi-Fi or LAN.
 6. On the PC, double-click `Run_CaptureBridge_Hub.bat` in the extracted folder.
 7. Allow Windows firewall access on Private networks when prompted.
 8. Start the CaptureBridge Android app on the phone.
@@ -74,7 +76,8 @@ repository.
 3. If this is the first repo run, the launcher automatically calls
    [Setup_CaptureBridge_Hub.bat](Setup_CaptureBridge_Hub.bat).
 4. Allow Windows firewall access on Private networks when prompted.
-5. Start the compatible iOS or Android phone clients.
+5. Start the compatible iOS or Android phone clients. Android phones can
+   connect over USB/ADB reverse first, then fall back to Wi-Fi discovery.
 6. Confirm the phones appear in CaptureBridge Hub.
 
 If setup reports that Python is missing, install Python 3 for Windows and run
@@ -105,7 +108,8 @@ The red labels in the screenshot mark the main operator areas:
   buttons can be used.
 - **E**: Live preview stream controls. A single phone can usually stream at
   `1920 x 1080`; for multiple simultaneous streams, reduce the stream
-  resolution or max dimension. Streaming also drains phone batteries faster. See
+  resolution or max dimension. Streaming can use UDP over Wi-Fi or TCP through
+  USB/ADB reverse, and it drains phone batteries faster. See
   [Phone Live Preview](#phone-live-preview).
 - **F**: Captures and files stored on the phone selected in **G**.
 - **G**: Phone selector for per-phone file lists, transfers, deletes, and status.
@@ -120,12 +124,16 @@ CaptureBridge Hub listens on:
 - UDP `6000`: phone discovery
 - UDP `6101`: raw phone live preview stream
 
-Phones should discover the PC automatically over UDP. If discovery or streaming
-does not work, check these first:
+For Android, the default transport mode is `adb_reverse_first`: the Hub watches
+for authorized USB devices, sets up ADB reverse forwarding for TCP `6000` and
+the preview stream port, and Android tries USB before Wi-Fi discovery. If USB is
+not available, phones discover the PC automatically over UDP. If discovery or
+streaming does not work, check these first:
 
-- PC and phones are on the same Wi-Fi or LAN segment.
-- Windows network profile is set to Private.
-- Inbound firewall rules allow TCP `6000`, UDP `6000`, and UDP `6101`.
+- For USB: the phone is authorized for USB debugging and ADB is available.
+- For Wi-Fi: PC and phones are on the same Wi-Fi or LAN segment.
+- For Wi-Fi: Windows network profile is set to Private.
+- For Wi-Fi: inbound firewall rules allow TCP `6000`, UDP `6000`, and UDP `6101`.
 - VPNs, guest Wi-Fi isolation, and strict corporate networks are not blocking local traffic.
 
 PowerShell firewall rules, run as Administrator:
@@ -173,7 +181,8 @@ For a lab PC that should not need Python or internet access:
 2. Install the Android APK from the
    [latest CaptureBridge Android release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest)
    on the Android phone.
-3. Put the PC and phone on the same private Wi-Fi or LAN.
+3. Connect the Android phone by USB with USB debugging enabled, or put the PC
+   and phone on the same private Wi-Fi or LAN.
 4. Double-click `Run_CaptureBridge_Hub.bat` inside the extracted folder.
 5. Allow Windows firewall access on Private networks if prompted.
 
@@ -234,14 +243,17 @@ The Phone Specific panel includes a `Streams` section with one checkbox per
 connected phone. Check one phone to open one preview, or check multiple phones
 to open a modular preview grid.
 
-The stream uses two channels:
+The stream uses the phone control connection plus a separate preview channel:
 
 - TCP `6000` remains the control channel.
-- UDP `6101` carries chunked JPEG preview frames.
+- UDP `6101` carries chunked JPEG preview frames over Wi-Fi.
+- TCP on the configured stream port carries the same chunked JPEG frames when a
+  USB/ADB reverse connection is used.
 
 The app sends `LIVE_PREVIEW_START` with the PC host, stream port, FPS, JPEG
-quality, and max dimension. The phone sends preview frames only after that
-request. Unchecking the phone or closing the app sends `LIVE_PREVIEW_STOP`.
+quality, max dimension, transport protocol, and optional stream key. The phone
+sends preview frames only after that request. Unchecking the phone or closing
+the app sends `LIVE_PREVIEW_STOP`.
 
 Stream settings live under `phone_stream` in [app_config.json](app_config.json):
 
@@ -251,6 +263,12 @@ Stream settings live under `phone_stream` in [app_config.json](app_config.json):
 - `jpeg_quality`
 - `max_dimension`
 - `socket_buffer_bytes`
+
+Transport settings live under `phone_transport` in [app_config.json](app_config.json):
+
+- `mode`: `adb_reverse_first` or `wifi_only`
+- `adb_path`: optional path to `adb.exe`
+- `adb_poll_interval_sec`
 
 ## Operator Workflow
 
@@ -268,17 +286,21 @@ Stream settings live under `phone_stream` in [app_config.json](app_config.json):
 ## Lag Test
 
 Select a phone in `Connected phones` and press `Lag Test` to measure capture
-start/stop latency for the specific phone, camera mode, lighting, network, and
-trigger setup in use. The hub prepares the selected phone, opens a fullscreen
-timing target, sends scheduled `START` and `STOP` commands, transfers the test
-video, and writes JSON/CSV lag reports next to the transferred MP4. Phone timing
-responses that include nanosecond fields are logged with a
-`phone_rx_tx_delta_ms` value so the phone-side receive-to-transmit time is
-readable in milliseconds.
+start/stop latency for the specific phone, camera mode, lighting, transport, and
+trigger setup in use. The Hub prepares the selected phone, opens a fullscreen
+timing target, refreshes Hub-to-phone clock samples, and uses scheduled
+phone-clock commands (`START_AT` / `STOP_AT`) when the current time-sync samples
+are good enough. If scheduled timing is not usable, it falls back to immediate
+`START` / `STOP`. The test then transfers the video and writes JSON/CSV lag
+reports next to the transferred MP4.
 
-Lag reports include command timing, phone-clock target fields, segment cut
-offsets, and analyzer frame timing. Use those fields to separate transport
-timing problems from camera-frame selection or visual target analysis issues.
+Phone timing responses include `phone_rx_ns` and `phone_tx_ns`; the Hub keeps
+those raw fields for tooling and logs the compact
+`phone_rx_tx_delta_ms=<value>` summary for readability. Lag reports include
+command timing, phone-clock target fields, segment cut offsets from
+`.segment.json`, and analyzer frame timing. Use those fields to separate
+transport timing problems from camera-frame selection or visual target analysis
+issues.
 
 For reliable analysis, aim the phone at the right side of the fullscreen timing
 target and make sure the complete green border is visible in the recorded video.
@@ -378,6 +400,7 @@ Important settings:
 - `name_separator`: separator used in the generated capture name
 - `name_fields`: the ordered fields shown in the naming UI
 - `phone_stream`: live preview settings
+- `phone_transport`: USB/ADB reverse and Wi-Fi transport preference
 - `camera_defaults`: first-run camera defaults before a saved camera profile exists
 
 On first startup, the app prefers a shared `1920 x 1080` camera mode and selects
@@ -477,9 +500,14 @@ UDP discovery:
 Desktop to phone over TCP:
 
 - `NAME <generated_name>`
+- `PING <payload>`
+- `SYNC <seq> hub_tx_ns=<ns>`
 - `PREPARE <json>` for lag-test recorder preparation
+- `ARM [<json>]`
 - `START`
+- `START_AT phone_elapsed_ns=<ns>`
 - `STOP`
+- `STOP_AT phone_elapsed_ns=<ns>`
 - `LIST`
 - `GET <capture_name>`
 - `GET_ALL`
@@ -493,6 +521,9 @@ Desktop to phone over TCP:
 Phone to desktop over TCP:
 
 - `HELLO <device_name>`
+- `TRANSPORT <usb_adb_reverse|wifi|direct> host=<host>`
+- `PONG <payload> phone_elapsed_ns=<ns> phone_rx_ns=<ns> phone_tx_ns=<ns>`
+- `SYNC_OK seq=<seq> hub_tx_ns=<ns> phone_rx_ns=<ns> phone_tx_ns=<ns>`
 - `NAME_OK [generated_name]`
 - `PREPARE_OK [timing_fields]`
 - `PREPARE_ERR <reason>`
@@ -526,6 +557,8 @@ Payload notes:
 - File transfer uses `FILE_BEGIN`, raw bytes, then `FILE_DONE`.
 - `NAME_OK` may include the echoed generated name; if it does not, the Hub uses
   the last name it sent to that phone.
+- `SYNC` / `SYNC_OK` samples are used to estimate the phone elapsed-time clock
+  offset for scheduled commands.
 - Timing fields ending in `_ns` are logged in a compact millisecond form when
   possible; `phone_rx_ns` and `phone_tx_ns` are summarized as
   `phone_rx_tx_delta_ms`.
@@ -541,14 +574,16 @@ Payload notes:
 - Phone capture folders may add timestamp suffixes to the generated name; the
   Hub treats those as matches for current-capture transfer status and `GET`.
 - Camera settings payloads should include `resolutions`, `current`, and optionally `position`.
-- Preview start payload includes `host`, `port`, `maxFps`, `jpegQuality`, and `maxDimension`.
+- Preview start payload includes `host`, `port`, `protocol`, `maxFps`,
+  `jpegQuality`, `maxDimension`, and optionally `streamKey`.
 
 ## Troubleshooting
 
 ### Phones Do Not Appear
 
-- Confirm PC and phones are on the same private network.
-- Confirm UDP `6000` is allowed through the Windows firewall.
+- For USB, confirm USB debugging is enabled and authorized on the phone.
+- For Wi-Fi, confirm PC and phones are on the same private network.
+- For Wi-Fi, confirm UDP `6000` is allowed through the Windows firewall.
 - Check that the phone client is compatible with this protocol.
 - Disable VPN or guest-network isolation for testing.
 
