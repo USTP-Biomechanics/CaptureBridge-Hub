@@ -166,6 +166,7 @@ Copy-RequiredFile -Source (Join-Path $repoRoot "src\phone_stream.py") -Destinati
 Copy-RequiredFile -Source (Join-Path $repoRoot "src\phone_protocol.py") -Destination $appDir
 Copy-RequiredFile -Source (Join-Path $repoRoot "src\android_adb.py") -Destination $appDir
 Copy-RequiredFile -Source (Join-Path $repoRoot "requirements.txt") -Destination $appDir
+Copy-RequiredFile -Source (Join-Path $repoRoot "requirements-release.txt") -Destination $appDir
 Copy-RequiredFile -Source (Join-Path $scriptDir "minimal_app_config.json") -Destination (Join-Path $appDir "app_config.json")
 Copy-RequiredFile -Source (Join-Path $scriptDir "Run_MinimalOffline.bat") -Destination (Join-Path $stageRoot "Run_CaptureBridge_Hub.bat")
 Copy-RequiredFile -Source (Join-Path $scriptDir "README_Minimal_Offline.txt") -Destination (Join-Path $stageRoot "README_Minimal_Offline.txt")
@@ -319,7 +320,7 @@ if (-not $SourcePythonDir) {
     $oldNoUserSite = $env:PYTHONNOUSERSITE
     $env:PYTHONNOUSERSITE = "1"
     try {
-        & $pythonExe -m pip install --disable-pip-version-check --no-cache-dir -r (Join-Path $repoRoot "requirements.txt")
+        & $pythonExe -m pip install --disable-pip-version-check --no-cache-dir -r (Join-Path $repoRoot "requirements-release.txt")
         if ($LASTEXITCODE -ne 0) {
             throw "pip install failed with exit code $LASTEXITCODE"
         }
@@ -335,25 +336,55 @@ if (-not (Test-Path -LiteralPath $pythonExe)) {
 
 Write-Host ""
 Write-Host "Verifying bundled Python runtime..."
-& $pythonExe -c "import tkinter, serial, cv2, numpy; from PIL import Image, ImageTk; assert hasattr(cv2, 'aruco'); print('runtime ok')"
-if ($LASTEXITCODE -ne 0) {
-    throw "Bundled Python runtime verification failed with exit code $LASTEXITCODE"
-}
-
-Write-Host ""
-Write-Host "Verifying staged CaptureBridge Hub imports..."
 $oldNoUserSite = $env:PYTHONNOUSERSITE
 $oldPythonPath = $env:PYTHONPATH
 $env:PYTHONNOUSERSITE = "1"
 $env:PYTHONPATH = ""
-Push-Location $appDir
 try {
-    & $pythonExe -B -c "import android_adb, phone_protocol, phone_stream, tcp_arduino_sync; print('staged app imports ok')"
+    $requirementsPath = Join-Path $repoRoot "requirements-release.txt"
+    $verifyRuntimeScript = @'
+from importlib.metadata import version
+from pathlib import Path
+import sys
+
+expected = {}
+for raw_line in Path(sys.argv[1]).read_text(encoding='utf-8').splitlines():
+    line = raw_line.split('#', 1)[0].strip()
+    if not line:
+        continue
+    name, pinned_version = line.split('==', 1)
+    expected[name] = pinned_version
+
+actual = {name: version(name) for name in expected}
+if actual != expected:
+    raise SystemExit(f'Bundled dependency mismatch: expected {expected}, found {actual}')
+
+import tkinter
+import cv2
+import numpy
+import serial
+from PIL import Image, ImageTk
+
+assert hasattr(cv2, 'aruco')
+print('runtime ok: ' + ', '.join(f'{name}=={actual[name]}' for name in expected))
+'@
+    & $pythonExe -c $verifyRuntimeScript $requirementsPath
     if ($LASTEXITCODE -ne 0) {
-        throw "Staged CaptureBridge Hub import verification failed with exit code $LASTEXITCODE"
+        throw "Bundled Python runtime verification failed with exit code $LASTEXITCODE"
+    }
+
+    Write-Host ""
+    Write-Host "Verifying staged CaptureBridge Hub imports..."
+    Push-Location $appDir
+    try {
+        & $pythonExe -B -c "import android_adb, phone_protocol, phone_stream, tcp_arduino_sync; print('staged app imports ok')"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Staged CaptureBridge Hub import verification failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        Pop-Location
     }
 } finally {
-    Pop-Location
     $env:PYTHONNOUSERSITE = $oldNoUserSite
     $env:PYTHONPATH = $oldPythonPath
 }

@@ -1,0 +1,3 @@
+phone,display_refresh_hz,display_period_ms,capture_fps,frame_period_ms,boundaries,observed_min_frames,observed_max_frames,observed_min_ms,observed_max_ms,scope
+Samsung Galaxy S25 Ultra,144,6.9444,240,4.1667,start and stop,0,2,0,8.33,illustrative selected-phone bench observation
+Samsung Galaxy S25 Ultra,144,6.9444,60,16.6667,start and stop,0,1,0,16.67,illustrative selected-phone bench observation

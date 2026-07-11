@@ -19,12 +19,6 @@ from phone_protocol import (
     ClientTimeSync,
     MAX_PROTOCOL_LINE_BYTES,
     SCHEDULED_COMMAND_MIN_SEND_AHEAD_MS,
-    SCHEDULED_COMMAND_SAFETY_MARGIN_MS,
-    SCHEDULED_COMMAND_MAX_SEND_AHEAD_MS,
-    TIME_SYNC_MAX_BEST_RTT_MS,
-    TIME_SYNC_MAX_SAMPLE_AGE_SEC,
-    TIME_SYNC_MIN_SAMPLES_FOR_SCHEDULED,
-    TimeSyncSample,
     field_float as _field_float,
     field_int as _field_int,
     format_battery_status,
@@ -78,6 +72,9 @@ TCP_KEEPALIVE_IDLE_SEC = 30
 TCP_KEEPALIVE_INTERVAL_SEC = 10
 TCP_KEEPALIVE_COUNT = 3
 CLIENT_SOCKET_TIMEOUT_SEC = 1.0
+MAX_TRANSFER_FILE_BYTES = 16 * 1024 * 1024 * 1024
+MAX_TRANSFER_TOTAL_BYTES = 64 * 1024 * 1024 * 1024
+PARTIAL_TRANSFER_SUFFIX = ".part"
 ARDUINO_WRITE_TIMEOUT_SEC = 1.0
 MAX_LOG_LINES = 2000
 LOG_TRIM_BATCH_LINES = 250
@@ -1341,13 +1338,19 @@ class TcpServer:
                 "file_bytes_remaining": 0,
                 "file_handle": None,
                 "file_path": None,
+                "file_final_path": None,
                 "file_total": 0,
                 "file_received": 0,
                 "transfer_total": 0,
                 "transfer_received": 0,
                 "transfer_active": False,
+                "transfer_authorized": False,
+                "transfer_request_command": "",
                 "current_file_rel": "",
                 "pending_file_done_rel": "",
+                "pending_file_temp_path": None,
+                "pending_file_final_path": None,
+                "pending_file_size": 0,
                 "send_queue": queue.Queue(),
                 "time_sync": ClientTimeSync(),
                 "closed": False,
@@ -1408,7 +1411,7 @@ class TcpServer:
         except Exception as e:
             self.log(f"Error with client {addr}: {e}")
         finally:
-            self._close_open_file(client)
+            self._abort_incoming_transfer(client)
             self.log(f"Client disconnected: {addr}")
             removed = False
             with self.lock:
@@ -1428,6 +1431,85 @@ class TcpServer:
                 pass
         client["file_handle"] = None
 
+    @staticmethod
+    def _remove_partial_path(path: Optional[str]):
+        if not path:
+            return
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _clear_current_file_state(client):
+        client["file_bytes_remaining"] = 0
+        client["file_handle"] = None
+        client["file_path"] = None
+        client["file_final_path"] = None
+        client["file_total"] = 0
+        client["file_received"] = 0
+        client["current_file_rel"] = ""
+        client["rx_mode"] = "line"
+
+    def _discard_current_file(self, client):
+        temp_path = client.get("file_path")
+        self._close_open_file(client)
+        self._remove_partial_path(temp_path)
+        self._clear_current_file_state(client)
+
+    def _discard_pending_file(self, client):
+        self._remove_partial_path(client.get("pending_file_temp_path"))
+        client["pending_file_done_rel"] = ""
+        client["pending_file_temp_path"] = None
+        client["pending_file_final_path"] = None
+        client["pending_file_size"] = 0
+
+    def _abort_incoming_transfer(self, client):
+        self._discard_current_file(client)
+        self._discard_pending_file(client)
+        client["transfer_active"] = False
+        client["transfer_authorized"] = False
+        client["transfer_request_command"] = ""
+        client["transfer_total"] = 0
+        client["transfer_received"] = 0
+
+    def _commit_pending_file(self, client, reported_rel: str) -> str:
+        expected_rel = client.get("pending_file_done_rel") or ""
+        if not expected_rel:
+            raise ConnectionError("FILE_DONE received without a completed file payload")
+        if not reported_rel or reported_rel != expected_rel:
+            self._discard_pending_file(client)
+            raise ConnectionError(
+                f"FILE_DONE path mismatch: expected {expected_rel!r}, got {reported_rel!r}"
+            )
+
+        temp_path = client.get("pending_file_temp_path")
+        final_path = client.get("pending_file_final_path")
+        expected_size = int(client.get("pending_file_size") or 0)
+        if not temp_path or not final_path or not os.path.isfile(temp_path):
+            self._discard_pending_file(client)
+            raise ConnectionError("Completed transfer payload is missing its staged file")
+
+        actual_size = os.path.getsize(temp_path)
+        if actual_size != expected_size:
+            self._discard_pending_file(client)
+            raise ConnectionError(
+                f"Staged file size mismatch: expected {expected_size}, got {actual_size}"
+            )
+
+        try:
+            os.replace(temp_path, final_path)
+        except OSError as exc:
+            self._discard_pending_file(client)
+            raise ConnectionError(f"Could not finalize transferred file: {exc}") from exc
+
+        client["pending_file_done_rel"] = ""
+        client["pending_file_temp_path"] = None
+        client["pending_file_final_path"] = None
+        client["pending_file_size"] = 0
+        return final_path
+
     def _receive_file_payload(self, client, conn, buffer):
         remaining = client["file_bytes_remaining"]
         while remaining > 0:
@@ -1443,8 +1525,10 @@ class TcpServer:
                 if not chunk:
                     raise ConnectionError("Socket closed during file transfer")
 
-            if client["file_handle"]:
-                client["file_handle"].write(chunk)
+            file_handle = client.get("file_handle")
+            if file_handle is None:
+                raise ConnectionError("Incoming transfer has no staged file handle")
+            file_handle.write(chunk)
 
             remaining -= len(chunk)
             client["file_bytes_remaining"] = remaining
@@ -1452,13 +1536,27 @@ class TcpServer:
             client["transfer_received"] += len(chunk)
             self.transfer_progress_callback(client)
 
-        client["pending_file_done_rel"] = client.get("current_file_rel", "")
+        expected_size = int(client.get("file_total") or 0)
+        received_size = int(client.get("file_received") or 0)
+        if received_size != expected_size:
+            self._discard_current_file(client)
+            raise ConnectionError(
+                f"File payload size mismatch: expected {expected_size}, got {received_size}"
+            )
+
+        try:
+            client["file_handle"].flush()
+            os.fsync(client["file_handle"].fileno())
+        except OSError as exc:
+            self._discard_current_file(client)
+            raise ConnectionError(f"Could not flush staged transfer file: {exc}") from exc
+
         self._close_open_file(client)
-        client["file_path"] = None
-        client["file_total"] = 0
-        client["file_received"] = 0
-        client["current_file_rel"] = ""
-        client["rx_mode"] = "line"
+        client["pending_file_done_rel"] = client.get("current_file_rel", "")
+        client["pending_file_temp_path"] = client.get("file_path")
+        client["pending_file_final_path"] = client.get("file_final_path")
+        client["pending_file_size"] = expected_size
+        self._clear_current_file_state(client)
 
     def handle_line(self, client, line: str):
         addr = client["addr"]
@@ -1528,40 +1626,56 @@ class TcpServer:
             else:
                 self.log(f"{addr} sent NAME_OK without a name (no last name sent)")
         elif cmd == "FILE_BEGIN":
+            if not client.get("transfer_authorized") or not client.get("transfer_active"):
+                raise ConnectionError("Unsolicited FILE_BEGIN without an active Hub transfer request")
             if client.get("pending_file_done_rel"):
-                self.log(
-                    f"Missing FILE_DONE for previous file from {addr}: "
-                    f"{client['pending_file_done_rel']}"
+                previous_rel = client.get("pending_file_done_rel")
+                self._discard_pending_file(client)
+                raise ConnectionError(
+                    f"Missing FILE_DONE for previous file: {previous_rel!r}"
                 )
-                client["pending_file_done_rel"] = ""
             parts2 = rest.split(" ", 1)
             if len(parts2) != 2:
-                return None
+                raise ConnectionError("Malformed FILE_BEGIN")
             rel_path = parts2[0].strip()
             size_str = parts2[1].strip()
             try:
                 size = int(size_str)
-            except ValueError:
-                return None
+            except ValueError as exc:
+                raise ConnectionError("FILE_BEGIN has an invalid size") from exc
             if size < 0:
-                self.log(f"Rejected FILE_BEGIN with negative size from {addr}: {line}")
-                return None
+                raise ConnectionError("FILE_BEGIN has a negative size")
+            if size > MAX_TRANSFER_FILE_BYTES:
+                raise ConnectionError(
+                    f"FILE_BEGIN exceeds the {MAX_TRANSFER_FILE_BYTES}-byte per-file limit"
+                )
+            transfer_received = int(client.get("transfer_received") or 0)
+            if transfer_received + size > MAX_TRANSFER_TOTAL_BYTES:
+                raise ConnectionError(
+                    f"Transfer exceeds the {MAX_TRANSFER_TOTAL_BYTES}-byte request limit"
+                )
+            declared_total = int(client.get("transfer_total") or 0)
+            if declared_total and transfer_received + size > declared_total:
+                raise ConnectionError(
+                    "FILE_BEGIN payloads exceed the size declared by TRANSFER_BEGIN"
+                )
 
             save_dir = self.save_dir_getter()
-            abs_path = None
-            fh = None
             try:
                 storage_rel_path = lag_test_storage_relative_path(rel_path)
-                abs_path = resolve_safe_transfer_path(save_dir, storage_rel_path)
-                os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-                fh = open(abs_path, "wb")
-            except ValueError as e:
-                self.log(f"Rejected file path from {addr}: {rel_path!r} ({e}); discarding payload")
-            except Exception as e:
-                self.log(f"Failed to open file for write: {abs_path} err={e}; discarding payload")
+                final_path = resolve_safe_transfer_path(save_dir, storage_rel_path)
+                temp_path = final_path + PARTIAL_TRANSFER_SUFFIX
+                os.makedirs(os.path.dirname(final_path), exist_ok=True)
+                self._remove_partial_path(temp_path)
+                fh = open(temp_path, "wb")
+            except (OSError, ValueError) as exc:
+                raise ConnectionError(
+                    f"Could not stage incoming file {rel_path!r}: {exc}"
+                ) from exc
 
             client["file_handle"] = fh
-            client["file_path"] = abs_path
+            client["file_path"] = temp_path
+            client["file_final_path"] = final_path
             client["file_total"] = size
             client["file_received"] = 0
             client["file_bytes_remaining"] = size
@@ -1570,40 +1684,49 @@ class TcpServer:
             self.transfer_progress_callback(client)
             return "START_FILE"
         elif cmd == "FILE_DONE":
-            expected_rel = client.get("pending_file_done_rel") or ""
-            if expected_rel:
-                if rest and rest != expected_rel:
-                    self.log(
-                        f"FILE_DONE path mismatch from {addr}: "
-                        f"expected '{expected_rel}' got '{rest}'"
-                    )
-                elif not rest:
-                    self.log(f"FILE_DONE without path from {addr}")
-                client["pending_file_done_rel"] = ""
-            else:
-                self.log(f"Unexpected FILE_DONE while not awaiting one: {rest or '<missing path>'}")
+            final_path = self._commit_pending_file(client, rest)
+            self.log(f"Stored completed transfer file: {final_path}")
             self.message_callback(client, line)
         elif cmd == "TRANSFER_BEGIN":
+            if not client.get("transfer_authorized"):
+                raise ConnectionError("Unsolicited TRANSFER_BEGIN without a Hub transfer request")
             parts2 = rest.split(" ")
-            if len(parts2) >= 3:
-                try:
-                    client["transfer_total"] = int(parts2[2])
-                except Exception:
-                    client["transfer_total"] = 0
+            if len(parts2) < 3:
+                raise ConnectionError("Malformed TRANSFER_BEGIN")
+            try:
+                transfer_total = int(parts2[2])
+            except ValueError as exc:
+                raise ConnectionError("TRANSFER_BEGIN has an invalid total size") from exc
+            if transfer_total < 0:
+                raise ConnectionError("TRANSFER_BEGIN has a negative total size")
+            if transfer_total > MAX_TRANSFER_TOTAL_BYTES:
+                raise ConnectionError(
+                    f"TRANSFER_BEGIN exceeds the {MAX_TRANSFER_TOTAL_BYTES}-byte request limit"
+                )
+            client["transfer_total"] = transfer_total
             client["transfer_received"] = 0
             client["transfer_active"] = True
             self.transfer_progress_callback(client)
             self.message_callback(client, line)
-        elif cmd == "TRANSFER_DONE":
+        elif cmd in ("TRANSFER_DONE", "TRANSFER_ALL_DONE"):
+            if client.get("file_handle") or client.get("pending_file_done_rel"):
+                self._abort_incoming_transfer(client)
+                raise ConnectionError(f"{cmd} received before the current file was finalized")
+            declared_total = int(client.get("transfer_total") or 0)
+            received_total = int(client.get("transfer_received") or 0)
+            if declared_total != received_total:
+                self._abort_incoming_transfer(client)
+                raise ConnectionError(
+                    f"{cmd} byte count mismatch: expected {declared_total}, "
+                    f"received {received_total}"
+                )
             client["transfer_active"] = False
-            self.transfer_progress_callback(client)
-            self.message_callback(client, line)
-        elif cmd == "TRANSFER_ALL_DONE":
-            client["transfer_active"] = False
+            client["transfer_authorized"] = False
+            client["transfer_request_command"] = ""
             self.transfer_progress_callback(client)
             self.message_callback(client, line)
         elif cmd == "TRANSFER_ERR":
-            client["transfer_active"] = False
+            self._abort_incoming_transfer(client)
             self.transfer_progress_callback(client)
             self.message_callback(client, line)
         else:
@@ -1759,6 +1882,13 @@ class TcpServer:
             self._enqueue_send(client, data, name_payload=name_payload)
 
     def send_to_client(self, client, msg: str):
+        command = msg.split(" ", 1)[0].upper()
+        if command in ("GET", "GET_ALL"):
+            self._abort_incoming_transfer(client)
+            client["transfer_authorized"] = True
+            client["transfer_active"] = True
+            client["transfer_request_command"] = msg
+            self.transfer_progress_callback(client)
         data = (msg + "\n").encode("utf-8")
         self._enqueue_send(client, data)
 
@@ -1821,7 +1951,7 @@ class TcpServer:
             self._membership_version = _next_client_membership_version()
 
         for client in clients:
-            self._close_open_file(client)
+            self._abort_incoming_transfer(client)
             conn = client.get("conn")
             if conn:
                 try:

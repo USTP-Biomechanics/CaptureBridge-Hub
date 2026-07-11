@@ -13,10 +13,11 @@ single-camera monocular analysis, multi-camera reconstruction, video-to-pose
 workflows, mesh-based pose estimation, or OpenSim-compatible
 inverse-kinematics pipelines.
 
-![CaptureBridge Hub system architecture](docs/images/architecturefigure1.png)
-
-_Figure 1. CaptureBridge Hub coordinates Android phones over USB or the local
-network and can bridge external trigger systems through Arduino._
+The Hub is the session authority. Android clients pre-arm Camera2/MediaCodec
+recording pipelines and return video plus metadata. USB/ADB reverse or a trusted
+private network carries control, status, preview, and operator-requested file
+transfers. An optional Arduino serial bridge exchanges start/stop events with a
+marker-based or other laboratory reference system.
 
 ## Companion Android App
 
@@ -154,6 +155,28 @@ netsh advfirewall firewall add rule name="CaptureBridge Hub TCP Control 6000" di
 netsh advfirewall firewall add rule name="CaptureBridge Hub Phone Stream UDP 6101" dir=in action=allow protocol=UDP localport=6101 profile=private
 ```
 
+## Security And Data Handling
+
+CaptureBridge is designed for an authorized USB connection or an isolated,
+trusted private WLAN/LAN. The current protocol does not provide pairing,
+authentication, authorization between connected peers, TLS, or payload
+encryption. Do not expose the control, discovery, or preview ports to the
+internet, a guest network, or another untrusted network. Prefer USB/ADB reverse
+for sensitive recordings and restrict Windows firewall rules to the Private
+profile.
+
+Android captures stay in the app's private storage until the operator requests
+a transfer. The Hub accepts file payloads only during that request, enforces
+per-file and per-request limits, writes to a temporary partial path, and
+publishes the final file only after the declared byte count and matching
+FILE_DONE are verified. An interrupted or invalid transfer removes its partial
+file. These controls reduce accidental or malicious writes, but they do not add
+confidentiality to an unencrypted network connection.
+
+Battery messages contain only the latest integer charge percentage, normalized
+charge state, and plugged source. The Hub displays this tuple and does not
+persist a battery history or estimate current, power, energy, or battery life.
+
 ## Citation
 
 If you use CaptureBridge in academic work, please cite the shared software
@@ -205,6 +228,11 @@ Run_CaptureBridge_Hub.bat
 The launcher checks for `.venv`. If the environment is missing, it runs
 `Setup_CaptureBridge_Hub.bat`, creates the local virtual environment, installs
 [requirements.txt](requirements.txt), and starts the app.
+
+The portable release is built from
+[requirements-release.txt](requirements-release.txt), which pins the tested
+dependency versions exactly. Development installs use the compatible ranges in
+requirements.txt.
 
 ## Repository Layout
 
@@ -321,9 +349,13 @@ After `STOP_OK`, the Hub waits briefly for `READY` or `READY_ERR` so that
 preview rearm status is visible, then continues with transfer lookup even if no
 ready message arrives.
 
-In our test setup, this workflow measured about a 20 ms difference for both
-start and stop timing. Treat that as setup-specific validation rather than a
-formal synchronization guarantee.
+In an illustrative Samsung Galaxy S25 Ultra bench check against a 144 Hz
+display, both endpoints were observed within 0--2 captured frames at 240 fps
+(0--8.33 ms) and 0--1 frame at 60 fps (0--16.67 ms). The display refresh period
+was 6.94 ms. This is a setup-specific, author-reported frame-scale observation,
+not traceable timing metrology or a phone-to-phone synchronization guarantee.
+The exact scope, conversion, limitations, and reproduction steps are published
+under [validation/](validation/).
 
 ## User Interface
 

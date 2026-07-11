@@ -42,7 +42,12 @@ jobs:
         run: |
           python -m venv .venv
           .\.venv\Scripts\python.exe -m pip install --upgrade pip
-          .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+          .\.venv\Scripts\python.exe -m pip install -r requirements-release.txt
+          .\.venv\Scripts\python.exe -m pip install pip-audit
+
+      - name: Audit Python dependencies
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe -m pip_audit -r requirements-release.txt
 
       - name: Run tests
         shell: pwsh
@@ -62,10 +67,13 @@ jobs:
           if (-not (Test-Path -LiteralPath $zipPath)) {
             throw "Release zip was not created: $zipPath"
           }
+          $checksumPath = "$zipPath.sha256"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zipPath).Hash.ToLowerInvariant()
+          "$hash  CaptureBridge_Hub_Minimal_Offline.zip" | Set-Content -NoNewline -Encoding ascii $checksumPath
 
           gh release view $env:RELEASE_TAG *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $env:RELEASE_TAG --title $env:RELEASE_TAG --notes "CaptureBridge Hub offline release."
+            gh release create $env:RELEASE_TAG --title $env:RELEASE_TAG --notes-file RELEASE_NOTES.md
           }
 
-          gh release upload $env:RELEASE_TAG $zipPath --clobber
+          gh release upload $env:RELEASE_TAG $zipPath $checksumPath --clobber

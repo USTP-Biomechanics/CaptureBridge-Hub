@@ -1,0 +1,6 @@
+# Exact dependency set used to build the v1.0.9 portable Windows release.
+# Keep requirements.txt as the supported source-install range.
+pyserial==3.5
+Pillow==12.2.0
+numpy==2.5.0
+opencv-contrib-python==4.13.0.92

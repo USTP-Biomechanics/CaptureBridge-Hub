@@ -1,4 +1,4 @@
 pyserial>=3.5,<4
-Pillow>=10,<12
+Pillow>=12.2,<13
 numpy>=1.26,<3
 opencv-contrib-python>=4.9,<5
