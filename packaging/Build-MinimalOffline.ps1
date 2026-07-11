@@ -163,6 +163,8 @@ Write-Host ""
 Write-Host "Copying minimal app files..."
 Copy-RequiredFile -Source (Join-Path $repoRoot "src\tcp_arduino_sync.py") -Destination $appDir
 Copy-RequiredFile -Source (Join-Path $repoRoot "src\phone_stream.py") -Destination $appDir
+Copy-RequiredFile -Source (Join-Path $repoRoot "src\phone_protocol.py") -Destination $appDir
+Copy-RequiredFile -Source (Join-Path $repoRoot "src\android_adb.py") -Destination $appDir
 Copy-RequiredFile -Source (Join-Path $repoRoot "requirements.txt") -Destination $appDir
 Copy-RequiredFile -Source (Join-Path $scriptDir "minimal_app_config.json") -Destination (Join-Path $appDir "app_config.json")
 Copy-RequiredFile -Source (Join-Path $scriptDir "Run_MinimalOffline.bat") -Destination (Join-Path $stageRoot "Run_CaptureBridge_Hub.bat")
@@ -336,6 +338,24 @@ Write-Host "Verifying bundled Python runtime..."
 & $pythonExe -c "import tkinter, serial, cv2, numpy; from PIL import Image, ImageTk; assert hasattr(cv2, 'aruco'); print('runtime ok')"
 if ($LASTEXITCODE -ne 0) {
     throw "Bundled Python runtime verification failed with exit code $LASTEXITCODE"
+}
+
+Write-Host ""
+Write-Host "Verifying staged CaptureBridge Hub imports..."
+$oldNoUserSite = $env:PYTHONNOUSERSITE
+$oldPythonPath = $env:PYTHONPATH
+$env:PYTHONNOUSERSITE = "1"
+$env:PYTHONPATH = ""
+Push-Location $appDir
+try {
+    & $pythonExe -B -c "import android_adb, phone_protocol, phone_stream, tcp_arduino_sync; print('staged app imports ok')"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Staged CaptureBridge Hub import verification failed with exit code $LASTEXITCODE"
+    }
+} finally {
+    Pop-Location
+    $env:PYTHONNOUSERSITE = $oldNoUserSite
+    $env:PYTHONPATH = $oldPythonPath
 }
 
 Write-Host ""

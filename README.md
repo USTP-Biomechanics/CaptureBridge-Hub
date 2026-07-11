@@ -113,6 +113,8 @@ The red labels in the screenshot mark the main operator areas:
   [Phone Live Preview](#phone-live-preview).
 - **F**: Captures and files stored on the phone selected in **G**.
 - **G**: Phone selector for per-phone file lists, transfers, deletes, and status.
+  Compatible phones append their battery percentage and charging state to the
+  connected-phone and selector labels.
 - **H**: Log output for discovery, connection, sync, transfer, stream, and
   troubleshooting messages.
 
@@ -210,7 +212,10 @@ The repository keeps executable source under [src/](src/) for SoftwareX
 submission compatibility.
 
 - [src/tcp_arduino_sync.py](src/tcp_arduino_sync.py): desktop app
-- [src/phone_stream.py](src/phone_stream.py): raw UDP phone preview receiver and Tk preview UI
+- [src/phone_protocol.py](src/phone_protocol.py): battery/status parsing and
+  thread-safe phone clock synchronization
+- [src/phone_stream.py](src/phone_stream.py): UDP/TCP phone preview receiver and Tk preview UI
+- [src/android_adb.py](src/android_adb.py): Android device discovery and ADB reverse helpers
 - [src/lag_test/](src/lag_test/): timing target, video analyzer, and report writer for lag tests
 - [app_config.json](app_config.json): save path, naming fields, and stream settings
 - [requirements.txt](requirements.txt): Python dependencies for repo runs
@@ -525,6 +530,7 @@ Phone to desktop over TCP:
 - `PONG <payload> phone_elapsed_ns=<ns> phone_rx_ns=<ns> phone_tx_ns=<ns>`
 - `SYNC_OK seq=<seq> hub_tx_ns=<ns> phone_rx_ns=<ns> phone_tx_ns=<ns>`
 - `NAME_OK [generated_name]`
+- `BATTERY level_pct=<0-100> status=<state> plugged=<source>`
 - `PREPARE_OK [timing_fields]`
 - `PREPARE_ERR <reason>`
 - `LIST_OK <json>`
@@ -557,6 +563,12 @@ Payload notes:
 - File transfer uses `FILE_BEGIN`, raw bytes, then `FILE_DONE`.
 - `NAME_OK` may include the echoed generated name; if it does not, the Hub uses
   the last name it sent to that phone.
+- `BATTERY` is an unsolicited status update. `status` is `charging`, `full`,
+  `discharging`, `not_charging`, or `unknown`; `plugged` is `usb`, `ac`,
+  `wireless`, `dock`, `none`, or `unknown`. Compatible Android clients send an
+  initial update after connecting and another only when the normalized battery
+  state changes. Older clients that do not send `BATTERY` remain supported and
+  simply show no battery suffix in the Hub.
 - `SYNC` / `SYNC_OK` samples are used to estimate the phone elapsed-time clock
   offset for scheduled commands.
 - Timing fields ending in `_ns` are logged in a compact millisecond form when

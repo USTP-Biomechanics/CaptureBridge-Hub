@@ -15,6 +15,23 @@ import serial
 import serial.tools.list_ports
 import android_adb
 from lag_test import LagTiming, LagTimingDisplay, analyze_lag_video, write_lag_report
+from phone_protocol import (
+    ClientTimeSync,
+    MAX_PROTOCOL_LINE_BYTES,
+    SCHEDULED_COMMAND_MIN_SEND_AHEAD_MS,
+    SCHEDULED_COMMAND_SAFETY_MARGIN_MS,
+    SCHEDULED_COMMAND_MAX_SEND_AHEAD_MS,
+    TIME_SYNC_MAX_BEST_RTT_MS,
+    TIME_SYNC_MAX_SAMPLE_AGE_SEC,
+    TIME_SYNC_MIN_SAMPLES_FOR_SCHEDULED,
+    TimeSyncSample,
+    field_float as _field_float,
+    field_int as _field_int,
+    format_battery_status,
+    parse_battery_status,
+    parse_protocol_fields as _parse_protocol_fields,
+    protocol_line_is_too_long,
+)
 # -----------------------------------
 # CONFIG
 # -----------------------------------
@@ -53,12 +70,6 @@ TIME_SYNC_CONNECT_BURST_COUNT = 20
 TIME_SYNC_LAG_TEST_BURST_COUNT = 10
 TIME_SYNC_BURST_INTERVAL_MS = 50
 TIME_SYNC_IDLE_INTERVAL_SEC = 1.0
-TIME_SYNC_MAX_SAMPLE_AGE_SEC = 10.0
-TIME_SYNC_MAX_BEST_RTT_MS = 250.0
-TIME_SYNC_MIN_SAMPLES_FOR_SCHEDULED = 3
-SCHEDULED_COMMAND_MIN_SEND_AHEAD_MS = 150.0
-SCHEDULED_COMMAND_SAFETY_MARGIN_MS = 100.0
-SCHEDULED_COMMAND_MAX_SEND_AHEAD_MS = 900.0
 LAG_TEST_TRANSFER_ROOT = "LagTests"
 CAPTURE_STOP_OK_TIMEOUT_MS = 20000
 CAPTURE_READY_TIMEOUT_MS = 3000
@@ -71,6 +82,15 @@ ARDUINO_WRITE_TIMEOUT_SEC = 1.0
 MAX_LOG_LINES = 2000
 LOG_TRIM_BATCH_LINES = 250
 APP_SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
+_CLIENT_MEMBERSHIP_VERSION = 0
+_CLIENT_MEMBERSHIP_VERSION_LOCK = threading.Lock()
+
+
+def _next_client_membership_version() -> int:
+    global _CLIENT_MEMBERSHIP_VERSION
+    with _CLIENT_MEMBERSHIP_VERSION_LOCK:
+        _CLIENT_MEMBERSHIP_VERSION += 1
+        return _CLIENT_MEMBERSHIP_VERSION
 
 
 def resolve_app_root(source_dir: str) -> str:
@@ -329,55 +349,6 @@ def _truncate_log_text(text: str, limit: int = 240) -> str:
     return text[: max(0, limit - 3)] + "..."
 
 
-def _parse_protocol_fields(text: str) -> Tuple[List[str], Dict[str, str]]:
-    labels = []
-    fields = {}
-    for token in str(text or "").split():
-        if "=" in token:
-            key, value = token.split("=", 1)
-            fields[key] = value
-        else:
-            labels.append(token)
-    return labels, fields
-
-
-def _field_float(fields: Dict[str, str], key: str) -> Optional[float]:
-    try:
-        return float(fields[key])
-    except Exception:
-        return None
-
-
-def _field_int(fields: Dict[str, str], key: str) -> Optional[int]:
-    try:
-        return int(fields[key])
-    except Exception:
-        return None
-
-
-def _median(values: List[float]) -> Optional[float]:
-    if not values:
-        return None
-    ordered = sorted(float(v) for v in values)
-    mid = len(ordered) // 2
-    if len(ordered) % 2:
-        return ordered[mid]
-    return (ordered[mid - 1] + ordered[mid]) / 2.0
-
-
-def _percentile(values: List[float], percentile: float) -> Optional[float]:
-    if not values:
-        return None
-    ordered = sorted(float(v) for v in values)
-    if len(ordered) == 1:
-        return ordered[0]
-    rank = (len(ordered) - 1) * max(0.0, min(100.0, percentile)) / 100.0
-    lower = int(rank)
-    upper = min(lower + 1, len(ordered) - 1)
-    frac = rank - lower
-    return ordered[lower] * (1.0 - frac) + ordered[upper] * frac
-
-
 def _fmt_delta_ms(value: Optional[float]) -> Optional[str]:
     if value is None:
         return None
@@ -510,133 +481,6 @@ def _split_protocol_payload_and_fields(text: str) -> Tuple[str, str]:
         else:
             payload.append(token)
     return " ".join(payload), " ".join(fields)
-
-
-@dataclass
-class TimeSyncSample:
-    seq: int
-    hub_tx_ns: int
-    hub_rx_ns: int
-    phone_rx_ns: int
-    phone_tx_ns: int
-    rtt_ms: float
-    offset_ns: int
-    recorded_perf: float
-
-
-class ClientTimeSync:
-    def __init__(self, max_samples: int = 120):
-        self.max_samples = max_samples
-        self.samples: List[TimeSyncSample] = []
-        self.pending: Dict[int, int] = {}
-        self.next_seq = 1
-
-    def begin_sample(self) -> Tuple[int, int]:
-        seq = self.next_seq
-        self.next_seq += 1
-        hub_tx_ns = time.perf_counter_ns()
-        self.pending[seq] = hub_tx_ns
-        if len(self.pending) > 256:
-            stale = sorted(self.pending)[: len(self.pending) - 256]
-            for stale_seq in stale:
-                self.pending.pop(stale_seq, None)
-        return seq, hub_tx_ns
-
-    def complete_sample(self, seq: int, hub_tx_ns: int, phone_rx_ns: int, phone_tx_ns: int) -> Optional[TimeSyncSample]:
-        original_hub_tx_ns = self.pending.pop(seq, None)
-        if original_hub_tx_ns is not None:
-            hub_tx_ns = original_hub_tx_ns
-        hub_rx_ns = time.perf_counter_ns()
-        if phone_rx_ns <= 0 or phone_tx_ns <= 0 or phone_tx_ns < phone_rx_ns:
-            return None
-        phone_processing_ns = phone_tx_ns - phone_rx_ns
-        rtt_ns = (hub_rx_ns - hub_tx_ns) - phone_processing_ns
-        if rtt_ns < 0:
-            rtt_ns = 0
-        hub_mid_ns = (hub_tx_ns + hub_rx_ns) // 2
-        phone_mid_ns = (phone_rx_ns + phone_tx_ns) // 2
-        sample = TimeSyncSample(
-            seq=seq,
-            hub_tx_ns=hub_tx_ns,
-            hub_rx_ns=hub_rx_ns,
-            phone_rx_ns=phone_rx_ns,
-            phone_tx_ns=phone_tx_ns,
-            rtt_ms=rtt_ns / 1_000_000.0,
-            offset_ns=phone_mid_ns - hub_mid_ns,
-            recorded_perf=time.perf_counter(),
-        )
-        self.samples.append(sample)
-        if len(self.samples) > self.max_samples:
-            self.samples = self.samples[-self.max_samples :]
-        return sample
-
-    def recent_samples(self, max_age_sec: float = TIME_SYNC_MAX_SAMPLE_AGE_SEC) -> List[TimeSyncSample]:
-        cutoff = time.perf_counter() - max(0.0, float(max_age_sec))
-        return [sample for sample in self.samples if sample.recorded_perf >= cutoff]
-
-    def best_sample(self) -> Optional[TimeSyncSample]:
-        samples = self.recent_samples()
-        if not samples:
-            samples = list(self.samples[-20:])
-        if not samples:
-            return None
-        return min(samples, key=lambda sample: sample.rtt_ms)
-
-    def best_offset_ns(self) -> Optional[int]:
-        sample = self.best_sample()
-        return None if sample is None else sample.offset_ns
-
-    def is_usable(self) -> bool:
-        samples = self.recent_samples()
-        best = self.best_sample()
-        return (
-            len(samples) >= TIME_SYNC_MIN_SAMPLES_FOR_SCHEDULED
-            and best is not None
-            and best.rtt_ms <= TIME_SYNC_MAX_BEST_RTT_MS
-        )
-
-    def scheduled_send_ahead_ms(self) -> float:
-        samples = self.recent_samples()
-        if not samples:
-            samples = list(self.samples[-20:])
-        rtts = [sample.rtt_ms for sample in samples]
-        p95 = _percentile(rtts, 95.0)
-        basis = float(p95) if p95 is not None else SCHEDULED_COMMAND_MIN_SEND_AHEAD_MS
-        send_ahead = max(SCHEDULED_COMMAND_MIN_SEND_AHEAD_MS, basis + SCHEDULED_COMMAND_SAFETY_MARGIN_MS)
-        return min(SCHEDULED_COMMAND_MAX_SEND_AHEAD_MS, send_ahead)
-
-    def summary(self) -> dict:
-        samples = self.recent_samples()
-        if not samples:
-            samples = list(self.samples[-20:])
-        rtts = [sample.rtt_ms for sample in samples]
-        offsets_ms = [sample.offset_ns / 1_000_000.0 for sample in samples]
-        best = min(samples, key=lambda sample: sample.rtt_ms) if samples else None
-        median_offset = _median(offsets_ms)
-        offset_jitter = None
-        if median_offset is not None:
-            deviations = [abs(value - median_offset) for value in offsets_ms]
-            offset_jitter = _median(deviations)
-        return {
-            "sample_count": len(samples),
-            "pending_count": len(self.pending),
-            "usable": self.is_usable() if samples else False,
-            "best_seq": None if best is None else best.seq,
-            "best_rtt_ms": None if best is None else best.rtt_ms,
-            "rtt_min_ms": min(rtts) if rtts else None,
-            "rtt_median_ms": _median(rtts),
-            "rtt_p95_ms": _percentile(rtts, 95.0),
-            "rtt_max_ms": max(rtts) if rtts else None,
-            "offset_ms": None if best is None else best.offset_ns / 1_000_000.0,
-            "offset_median_ms": median_offset,
-            "offset_jitter_median_ms": offset_jitter,
-            "send_ahead_ms": (
-                self.scheduled_send_ahead_ms()
-                if samples
-                else SCHEDULED_COMMAND_MIN_SEND_AHEAD_MS
-            ),
-            "latest_age_sec": None if not samples else time.perf_counter() - samples[-1].recorded_perf,
-        }
 
 
 @dataclass
@@ -1417,13 +1261,35 @@ class ArduinoController:
 # -----------------------------------
 # TCP server
 # -----------------------------------
+def _format_client_display_label(client: dict) -> str:
+    ip, port = client["addr"]
+    name = client.get("name") or "Unknown"
+    transport = str(client.get("transport") or "").lower()
+    if transport == "usb_adb_reverse":
+        connection_text = "USB"
+    elif transport == "wifi":
+        connection_text = f"Wi-Fi {ip}:{port}"
+    elif transport == "direct":
+        connection_text = f"Direct {ip}:{port}"
+    else:
+        connection_text = f"{ip}:{port}"
+
+    label = f"{name} ({connection_text})"
+    battery_text = format_battery_status(client.get("battery"))
+    if battery_text:
+        label += f" | {battery_text}"
+    return label
+
+
 class TcpServer:
     def __init__(self, host, port, log_callback, clients_changed_callback,
-                 message_callback, transfer_progress_callback, save_dir_getter):
+                 client_metadata_changed_callback, message_callback,
+                 transfer_progress_callback, save_dir_getter):
         self.host = host
         self.port = port
         self.log = log_callback
         self.clients_changed_callback = clients_changed_callback
+        self.client_metadata_changed_callback = client_metadata_changed_callback
         self.message_callback = message_callback
         self.transfer_progress_callback = transfer_progress_callback
         self.save_dir_getter = save_dir_getter
@@ -1448,6 +1314,7 @@ class TcpServer:
 
         self.clients = []
         self.lock = threading.Lock()
+        self._membership_version = _next_client_membership_version()
 
         threading.Thread(target=self.accept_loop, daemon=True).start()
 
@@ -1467,6 +1334,7 @@ class TcpServer:
                 "name": None,
                 "transport": "usb_adb_reverse" if addr[0] in ("127.0.0.1", "::1") else "wifi",
                 "transport_details": {},
+                "battery": None,
                 "last_name_ok": None,
                 "last_name_sent": None,
                 "rx_mode": "line",
@@ -1487,6 +1355,7 @@ class TcpServer:
 
             with self.lock:
                 self.clients.append(client)
+                self._membership_version = _next_client_membership_version()
             self._notify_clients_changed()
 
             threading.Thread(target=self._client_send_loop, args=(client,), daemon=True).start()
@@ -1517,7 +1386,16 @@ class TcpServer:
 
                         newline = buffer.find(b"\n")
                         if newline < 0:
+                            if protocol_line_is_too_long(len(buffer), newline):
+                                raise ConnectionError(
+                                    "Protocol line exceeded "
+                                    f"{MAX_PROTOCOL_LINE_BYTES} bytes without a newline"
+                                )
                             break
+                        if protocol_line_is_too_long(len(buffer), newline):
+                            raise ConnectionError(
+                                f"Protocol line exceeded {MAX_PROTOCOL_LINE_BYTES} bytes"
+                            )
 
                         line = buffer[:newline]
                         del buffer[:newline + 1]
@@ -1536,6 +1414,7 @@ class TcpServer:
             with self.lock:
                 if client in self.clients:
                     self.clients.remove(client)
+                    self._membership_version = _next_client_membership_version()
                     removed = True
             if removed:
                 self._notify_clients_changed()
@@ -1590,14 +1469,29 @@ class TcpServer:
         rest = parts[1].strip() if len(parts) > 1 else ""
 
         if cmd == "HELLO":
-            client["name"] = rest or None
-            self._notify_clients_changed()
+            name = rest or None
+            if client.get("name") != name:
+                client["name"] = name
+                self._notify_client_metadata_changed("hello")
         elif cmd == "TRANSPORT":
             labels, fields = _parse_protocol_fields(rest)
             transport = labels[0].lower() if labels else "unknown"
-            client["transport"] = transport
-            client["transport_details"] = fields
-            self._notify_clients_changed()
+            if (
+                client.get("transport") != transport
+                or client.get("transport_details") != fields
+            ):
+                client["transport"] = transport
+                client["transport_details"] = fields
+                self._notify_client_metadata_changed("transport")
+        elif cmd == "BATTERY":
+            try:
+                battery = parse_battery_status(rest)
+            except ValueError as exc:
+                self.log(f"Ignored invalid BATTERY from {addr}: {exc}")
+            else:
+                if client.get("battery") != battery:
+                    client["battery"] = battery
+                    self._notify_client_metadata_changed("battery")
         elif cmd == "SYNC_OK":
             labels, fields = _parse_protocol_fields(rest)
             seq = _field_int(fields, "seq")
@@ -1760,24 +1654,23 @@ class TcpServer:
         with self.lock:
             clients = list(self.clients)
 
-        for c in clients:
-            ip, port = c["addr"]
-            name = c["name"] or "Unknown"
-            transport = str(c.get("transport") or "").lower()
-            if transport == "usb_adb_reverse":
-                suffix = "USB"
-            elif transport == "wifi":
-                suffix = f"Wi-Fi {ip}:{port}"
-            elif transport == "direct":
-                suffix = f"Direct {ip}:{port}"
-            else:
-                suffix = f"{ip}:{port}"
-            infos.append((c, f"{name} ({suffix})"))
+        for client in clients:
+            infos.append((client, _format_client_display_label(client)))
         return infos
 
     def _notify_clients_changed(self):
+        with self.lock:
+            clients = list(self.clients)
+            membership_version = self._membership_version
+        infos = [
+            (client, _format_client_display_label(client))
+            for client in clients
+        ]
+        self.clients_changed_callback(infos, membership_version)
+
+    def _notify_client_metadata_changed(self, metadata_kind: str):
         infos = self._clients_info()
-        self.clients_changed_callback(infos)
+        self.client_metadata_changed_callback(infos, metadata_kind)
 
     def _remove_client(self, client, reason: str):
         conn = client.get("conn")
@@ -1787,6 +1680,7 @@ class TcpServer:
         with self.lock:
             if client in self.clients:
                 self.clients.remove(client)
+                self._membership_version = _next_client_membership_version()
                 removed = True
 
         if conn:
@@ -1924,6 +1818,7 @@ class TcpServer:
         with self.lock:
             clients = list(self.clients)
             self.clients.clear()
+            self._membership_version = _next_client_membership_version()
 
         for client in clients:
             self._close_open_file(client)
@@ -1935,8 +1830,7 @@ class TcpServer:
                     pass
             self._stop_client_sender(client)
 
-        if clients:
-            self._notify_clients_changed()
+        self._notify_clients_changed()
 
 
 # -----------------------------------
@@ -2090,6 +1984,7 @@ class App:
         self._adb_monitor_stop_event = threading.Event()
         self._adb_monitor_thread = None
         self._adb_last_log_state = None
+        self._last_client_membership_version = 0
 
         # Main 3-column layout: controls and logs on the left, shared settings in the
         # middle, and selected-phone controls on the right.
@@ -3771,15 +3666,27 @@ class App:
 
     # ------- client list updates -------
 
-    def on_clients_changed(self, infos):
+    def _replace_client_label_rows(self, infos):
+        self.clients_list.delete(0, tk.END)
+        self.client_entries = []
+        self.phone_selector_labels = []
+        for client, _label_snapshot in infos:
+            label = _format_client_display_label(client)
+            self.clients_list.insert(tk.END, label)
+            self.client_entries.append(client)
+            self.phone_selector_labels.append(label)
+
+        self.phone_selector_combo.configure(
+            values=self.phone_selector_labels,
+            state="readonly" if self.phone_selector_labels else "disabled",
+        )
+
+    def on_clients_changed(self, infos, membership_version: int):
         def update():
-            self.clients_list.delete(0, tk.END)
-            self.client_entries = []
-            self.phone_selector_labels = []
-            for c, s in infos:
-                self.clients_list.insert(tk.END, s)
-                self.client_entries.append(c)
-                self.phone_selector_labels.append(s)
+            if membership_version < self._last_client_membership_version:
+                return
+            self._last_client_membership_version = membership_version
+            self._replace_client_label_rows(infos)
 
             active_client_keys = {client["key"] for client in self.client_entries}
             self.camera_settings_by_client = {
@@ -3812,11 +3719,6 @@ class App:
                 for key in list(disconnected_keys):
                     self._mark_pending_capture_ready(key, "phone disconnected")
 
-            self.phone_selector_combo.configure(
-                values=self.phone_selector_labels,
-                state="readonly" if self.phone_selector_labels else "disabled",
-            )
-
             if self.client_entries:
                 if self.selected_client not in self.client_entries:
                     self.selected_client = self.client_entries[0]
@@ -3833,6 +3735,35 @@ class App:
             self.update_transfer_sync_status()
             self.update_start_stop_buttons()
             if self.phone_stream_pane is not None:
+                self.phone_stream_pane.update_clients(list(self.client_entries))
+
+        try:
+            self.root.after(0, update)
+        except tk.TclError:
+            pass
+
+    def on_client_metadata_changed(self, infos, metadata_kind: str):
+        def update():
+            current_keys = {client["key"] for client in self.client_entries}
+            next_keys = {client["key"] for client, _label in infos}
+            if current_keys != next_keys:
+                # A membership callback is already queued and will rebuild from
+                # the clients' current metadata when it runs.
+                return
+
+            selected_key = self.selected_client.get("key") if self.selected_client else None
+            self._replace_client_label_rows(infos)
+            self.selected_client = next(
+                (
+                    client
+                    for client in self.client_entries
+                    if client.get("key") == selected_key
+                ),
+                self.client_entries[0] if self.client_entries else None,
+            )
+            self.sync_selected_client_controls()
+
+            if metadata_kind == "hello" and self.phone_stream_pane is not None:
                 self.phone_stream_pane.update_clients(list(self.client_entries))
 
         try:
@@ -3932,11 +3863,16 @@ class App:
         self._set_adb_status(status)
 
     def _set_adb_status(self, status: str):
-        self.adb_status_text = status
-        if status != self._adb_last_log_state:
-            self.log(status)
-            self._adb_last_log_state = status
-        self.update_phone_connection_ui()
+        def apply_status():
+            if self._adb_monitor_stop_event.is_set():
+                return
+            self.adb_status_text = status
+            if status != self._adb_last_log_state:
+                self.log(status)
+                self._adb_last_log_state = status
+            self.update_phone_connection_ui()
+
+        self._call_on_ui_thread(apply_status)
 
     def _remove_adb_reverse(self, serial: str):
         adb_path = self.adb_path
@@ -3969,6 +3905,7 @@ class App:
                 port=SERVER_PORT,
                 log_callback=self.log,
                 clients_changed_callback=self.on_clients_changed,
+                client_metadata_changed_callback=self.on_client_metadata_changed,
                 message_callback=self.on_client_message,
                 transfer_progress_callback=self.on_transfer_progress,
                 save_dir_getter=self.get_save_dir,
@@ -4026,7 +3963,6 @@ class App:
         if tcp is not None:
             tcp.close()
 
-        self.on_clients_changed([])
         self.update_phone_connection_ui()
         self.log("Phone connection disabled")
         return True
