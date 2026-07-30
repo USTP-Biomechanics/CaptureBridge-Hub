@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.10 - 2026-07-30
+
+- Update the portable-release and source-install Pillow requirement to 12.3.0
+  or newer, which contains the upstream fixes for the advisories reported
+  against Pillow 12.2.0.
+- Clarify the Android-only release scope, pin the compatible SoftwareX release
+  pair, document checksum verification, and align boundary-timing terminology.
+
 ## v1.0.9 - 2026-07-11
 
 - Require Pillow 12.2 or newer and build the portable release from an exact,
