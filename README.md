@@ -2,10 +2,10 @@
 
 CaptureBridge is a local or USB-connected acquisition system for smartphone-based
 markerless motion-analysis workflows. CaptureBridge Hub is the Windows desktop
-control app: it connects to compatible iOS and Android clients over local
-network or USB/ADB reverse transport, keeps capture names and camera settings
-aligned, starts and stops all phones together, transfers recordings back to the
-PC, and can bridge trigger events to Arduino and Vicon lab workflows.
+control app: it connects to CaptureBridge Android clients over a local network
+or USB/ADB reverse transport, keeps capture names and camera settings aligned,
+starts and stops all phones together, transfers recordings back to the PC, and
+can bridge trigger events to Arduino and Vicon lab workflows.
 
 The goal is repeatable acquisition, not a locked-in analysis algorithm. The Hub
 collects organized phone videos and metadata that can be used downstream with
@@ -23,9 +23,20 @@ marker-based or other laboratory reference system.
 
 CaptureBridge Hub is designed to work with the CaptureBridge Android phone
 client. For normal lab use, download the Android APK from the
-[latest CaptureBridge Android release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest).
+[CaptureBridge Android v1.0.15 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.15).
 The phone app source lives in
 [USTP-Biomechanics/CaptureBridge-Android](https://github.com/USTP-Biomechanics/CaptureBridge-Android).
+
+## Compatible Release Pair
+
+The release pair archived for the CaptureBridge SoftwareX submission is:
+
+- [CaptureBridge Hub v1.0.9](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/tag/v1.0.9)
+- [CaptureBridge Android v1.0.15](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.15)
+
+Use these two versions together when reproducing the published software
+configuration. Future releases may change the protocol or installation
+instructions.
 
 Important connection note: the Hub can connect to Android phones over USB with
 ADB reverse port forwarding, or over the local Wi-Fi/LAN discovery path. Wi-Fi
@@ -36,35 +47,41 @@ for TCP `6000`, UDP `6000`, and the phone streaming UDP port `6101`.
 ## Quick Start
 
 For normal use, download the portable release ZIP from the
-[latest GitHub release](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/latest),
+[CaptureBridge Hub v1.0.9 release](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/tag/v1.0.9),
 extract it, download and install the Android APK from the
-[latest CaptureBridge Android release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest),
+[CaptureBridge Android v1.0.15 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.15),
 and start the Windows app with the BAT file. That is the easiest path and does
 not require Python or internet access on the lab PC.
 
 ### Recommended Portable Release
 
 1. Download `CaptureBridge_Hub_Minimal_Offline.zip` from the
-   [latest GitHub release](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/latest).
-2. Extract the ZIP to a normal folder, for example `Documents` or `Desktop`.
-3. Download the Android APK from the
-   [latest CaptureBridge Android release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest)
+   [CaptureBridge Hub v1.0.9 release](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/tag/v1.0.9).
+2. Download the adjacent `.sha256` file and compare its first field with:
+
+   ```powershell
+   (Get-FileHash -Algorithm SHA256 .\CaptureBridge_Hub_Minimal_Offline.zip).Hash.ToLowerInvariant()
+   ```
+
+3. Extract the ZIP to a normal folder, for example `Documents` or `Desktop`.
+4. Download the Android APK from the
+   [CaptureBridge Android v1.0.15 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.15)
    and copy it to the phone if needed.
-4. Install the downloaded APK on the phone. If Android asks, allow installing
+5. Install the downloaded APK on the phone. If Android asks, allow installing
    this APK from the file manager or browser you are using.
-5. Connect the phone over USB with USB debugging enabled, or put the PC and
+6. Connect the phone over USB with USB debugging enabled, or put the PC and
    phone on the same private Wi-Fi or LAN.
-6. On the PC, double-click `Run_CaptureBridge_Hub.bat` in the extracted folder.
-7. Allow Windows firewall access on Private networks when prompted.
-8. Start the CaptureBridge Android app on the phone.
-9. Confirm the phone appears in CaptureBridge Hub.
-10. Fill in the session naming fields and confirm the camera profile is synced.
-11. Press `START`, then `STOP`.
-12. Transfer the current capture or all captures from the hub.
+7. On the PC, double-click `Run_CaptureBridge_Hub.bat` in the extracted folder.
+8. Allow Windows firewall access on Private networks when prompted.
+9. Start the CaptureBridge Android app on the phone.
+10. Confirm the phone appears in CaptureBridge Hub.
+11. Fill in the session naming fields and confirm the camera profile is synced.
+12. Press `START`, then `STOP`.
+13. Transfer the current capture or all captures from the Hub.
 
 The portable Hub release includes the Windows app, its Python runtime, and the
 Arduino/Vicon bridge files. The Android APK is published separately in the
-[latest CaptureBridge Android release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest).
+[CaptureBridge Android v1.0.15 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.15).
 No separate Python install is needed.
 
 ### Repo Run For Development
@@ -77,8 +94,8 @@ repository.
 3. If this is the first repo run, the launcher automatically calls
    [Setup_CaptureBridge_Hub.bat](Setup_CaptureBridge_Hub.bat).
 4. Allow Windows firewall access on Private networks when prompted.
-5. Start the compatible iOS or Android phone clients. Android phones can
-   connect over USB/ADB reverse first, then fall back to Wi-Fi discovery.
+5. Start the CaptureBridge Android clients. Android phones can connect over
+   USB/ADB reverse first, then fall back to Wi-Fi discovery.
 6. Confirm the phones appear in CaptureBridge Hub.
 
 If setup reports that Python is missing, install Python 3 for Windows and run
@@ -99,10 +116,11 @@ The red labels in the screenshot mark the main operator areas:
   be changed in [app_config.json](app_config.json).
 - **C**: Session controls. `START` and `STOP` control all connected phones.
   `ARM` listens for Arduino or Vicon trigger input when the bridge is connected.
-  `Lag Test` measures phone start/stop timing with a fullscreen visual timing
-  target, and `Disconnect` turns off phone networking when needed. If the
-  phones are not in silent mode, each phone plays a tone when capture starts
-  and stops. See [Lag Test](#lag-test), [Arduino Bridge](#arduino-bridge), and
+  `Lag Test` checks the selected phone's saved-segment boundary timing with a
+  fullscreen visual target; it is not solely a network-latency test.
+  `Disconnect` turns off phone networking when needed. If the phones are not
+  in silent mode, each phone plays a tone when capture starts and stops. See
+  [Lag Test](#lag-test), [Arduino Bridge](#arduino-bridge), and
   [Vicon Nexus Integration](#vicon-nexus-integration).
 - **D**: Global transfer and delete actions for all phones. Transfers are saved
   to the selected folder. Delete actions must be unlocked before the delete
@@ -174,26 +192,31 @@ file. These controls reduce accidental or malicious writes, but they do not add
 confidentiality to an unencrypted network connection.
 
 Battery messages contain only the latest integer charge percentage, normalized
-charge state, and plugged source. The Hub displays this tuple and does not
+charge state, and plugged source. The Hub displays these values and does not
 persist a battery history or estimate current, power, energy, or battery life.
 
 ## Citation
 
-If you use CaptureBridge in academic work, please cite the shared software
-citation:
+If you use CaptureBridge Hub in academic work, cite this repository and the
+companion Android client:
 
 ```text
-Simonlehner, M. (2026). CaptureBridge: Hub and Android client [Computer software suite].
+Simonlehner, M. (2026). CaptureBridge Hub: Windows controller for coordinated
+smartphone video acquisition [Computer software]. Version 1.0.9.
 https://github.com/USTP-Biomechanics/CaptureBridge-Hub
 https://github.com/USTP-Biomechanics/CaptureBridge-Android
 ```
 
-The repository also includes the shared [CITATION.cff](CITATION.cff), which
-GitHub uses for the `Cite this repository` button.
+The repository also includes [CITATION.cff](CITATION.cff), which GitHub uses
+for the `Cite this repository` button.
 
 ## Support
 
-For questions, contact mark.simonlehner@ustp.at.
+For questions, contact mark.simonlehner@ustp.at. Reproducible software defects
+can also be reported through the
+[Hub issue tracker](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/issues).
+Do not attach identifiable participant videos or other sensitive data to a
+public issue.
 
 ## Running The App
 
@@ -202,9 +225,9 @@ For questions, contact mark.simonlehner@ustp.at.
 For a lab PC that should not need Python or internet access:
 
 1. Download and extract `CaptureBridge_Hub_Minimal_Offline.zip` from the
-   [latest GitHub release](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/latest).
+   [CaptureBridge Hub v1.0.9 release](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/tag/v1.0.9).
 2. Install the Android APK from the
-   [latest CaptureBridge Android release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest)
+   [CaptureBridge Android v1.0.15 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.15)
    on the Android phone.
 3. Connect the Android phone by USB with USB debugging enabled, or put the PC
    and phone on the same private Wi-Fi or LAN.
@@ -213,9 +236,7 @@ For a lab PC that should not need Python or internet access:
 
 The offline package includes the app, portable CPython with Tkinter, `pyserial`,
 `Pillow`, and the Arduino bridge files. The Android client APK is published in
-the [latest CaptureBridge Android release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest).
-A compatible iOS client can also be used, but it is not included in this
-portable package.
+the [CaptureBridge Android v1.0.15 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.15).
 
 ### Normal Repo Run
 
@@ -254,14 +275,14 @@ submission compatibility.
 
 ## Main Features
 
-- Multi-phone control for compatible iOS and Android clients
+- Multi-phone control for CaptureBridge Android clients
 - UDP discovery plus TCP control on port `6000`
 - Shared live capture name with validation and automatic re-send until acknowledged
 - Global `START` and `STOP` broadcast
 - Shared camera settings for resolution, FPS, ISO, and shutter
 - Start is guarded until connected phones report the shared camera profile
-- Selected-phone lag test for measuring start/stop latency from a recorded
-  visual timing target
+- Selected-phone visual boundary-timing test for checking the first and last
+  saved frames against a recorded timing target
 - Per-phone capture lists and transfer controls
 - Global transfer for the current capture or all captures
 - Unlock-guarded delete actions for one phone or all phones
@@ -318,14 +339,16 @@ Transport settings live under `phone_transport` in [app_config.json](app_config.
 
 ## Lag Test
 
-Select a phone in `Connected phones` and press `Lag Test` to measure capture
-start/stop latency for the specific phone, camera mode, lighting, transport, and
-trigger setup in use. The Hub prepares the selected phone, opens a fullscreen
-timing target, refreshes Hub-to-phone clock samples, and uses scheduled
-phone-clock commands (`START_AT` / `STOP_AT`) when the current time-sync samples
-are good enough. If scheduled timing is not usable, it falls back to immediate
-`START` / `STOP`. The test then transfers the video and writes JSON/CSV lag
-reports next to the transferred MP4.
+Select a phone in `Connected phones` and press `Lag Test` to check the first and
+last saved-frame boundary timing for that phone, camera mode, lighting,
+transport, and trigger setup. The name is retained in the user interface for
+compatibility; the test evaluates the complete visual acquisition path rather
+than only network latency. The Hub prepares the selected phone, opens a
+fullscreen timing target, refreshes Hub-to-phone clock samples, and uses
+scheduled phone-clock commands (`START_AT` / `STOP_AT`) when the current
+time-sync samples are good enough. If scheduled timing is not usable, it falls
+back to immediate `START` / `STOP`. The test then transfers the video and writes
+JSON/CSV timing reports next to the transferred MP4.
 
 Phone timing responses include `phone_rx_ns` and `phone_tx_ns`; the Hub keeps
 those raw fields for tooling and logs the compact
@@ -513,9 +536,10 @@ unless you pass `-PythonInstallerPath` or `-SourcePythonDir`.
 ### GitHub Release Build
 
 The GitHub Actions workflow in `.github/workflows/release.yml` builds the
-offline ZIP on a Windows runner and uploads only
-`CaptureBridge_Hub_Minimal_Offline.zip` as a GitHub Release asset. The generated
-`dist/` folder is ignored and does not need to be committed.
+offline ZIP on a Windows runner and uploads
+`CaptureBridge_Hub_Minimal_Offline.zip` together with
+`CaptureBridge_Hub_Minimal_Offline.zip.sha256` as GitHub Release assets. The
+generated `dist/` folder is ignored and does not need to be committed.
 
 To create a release from a tag:
 

@@ -1,6 +1,6 @@
 cff-version: 1.2.0
-message: "If you use CaptureBridge in academic work, please cite it as below."
-title: "CaptureBridge: Hub and Android client"
+message: "If you use CaptureBridge Hub in academic work, please cite it as below."
+title: "CaptureBridge Hub: Windows controller for coordinated smartphone video acquisition"
 authors:
   - family-names: "Simonlehner"
     given-names: "Mark"
@@ -8,7 +8,9 @@ year: 2026
 version: "1.0.9"
 date-released: 2026-07-11
 license: MIT
-abstract: "Open-source smartphone video-acquisition suite with a Windows Hub and Android client, USB or trusted-private-network transport, scheduled capture boundaries, live preview, battery telemetry, structured file transfer, lag-test diagnostics, and optional Arduino triggering of a laboratory reference system."
+repository-code: "https://github.com/USTP-Biomechanics/CaptureBridge-Hub"
+url: "https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/tag/v1.0.9"
+abstract: "Open-source Windows controller for coordinated CaptureBridge Android video acquisition over authorized USB/ADB connections or a trusted private network, with shared session metadata, live preview, structured file transfer, visual boundary-timing diagnostics, and optional Arduino triggering of a laboratory reference system."
 keywords:
   - biomechanics
   - markerless motion capture
