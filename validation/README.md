@@ -7,7 +7,8 @@ synchronization validation dataset.
 ## Reported setup
 
 - phone: Samsung Galaxy S25 Ultra;
-- visual target: CaptureBridge Hub fullscreen ArUco timing display;
+- visual target: CaptureBridge Hub ArUco timing display on the left half of the
+  screen;
 - display refresh rate: 144 Hz (6.94 ms per refresh);
 - capture modes: 240 fps and 60 fps; and
 - evaluated boundaries: the first and last saved frames, corresponding to the
@@ -32,8 +33,8 @@ phone-to-phone synchronization.
    zero.
 2. Connect one phone through authorized USB/ADB reverse or a trusted private
    WLAN and select the camera profile to be tested.
-3. Aim the phone at the fullscreen lag-test target so the complete green border
-   and both timing markers remain visible.
+3. Aim the phone at the lag-test target on the left half of the screen so the
+   complete green border and both timing markers remain visible.
 4. Run the selected-phone Lag Test. The Hub pre-arms the encoder, refreshes
    clock samples, uses scheduled phone-clock boundaries when synchronization is
    usable, transfers the result, and analyzes the first and last saved frames.

@@ -117,7 +117,8 @@ The red labels in the screenshot mark the main operator areas:
 - **C**: Session controls. `START` and `STOP` control all connected phones.
   `ARM` listens for Arduino or Vicon trigger input when the bridge is connected.
   `Lag Test` checks the selected phone's saved-segment boundary timing with a
-  fullscreen visual target; it is not solely a network-latency test.
+  visual target on the left half of the screen; it is not solely a
+  network-latency test.
   `Disconnect` turns off phone networking when needed. If the phones are not
   in silent mode, each phone plays a tone when capture starts and stops. See
   [Lag Test](#lag-test), [Arduino Bridge](#arduino-bridge), and
@@ -344,8 +345,8 @@ last saved-frame boundary timing for that phone, camera mode, lighting,
 transport, and trigger setup. The name is retained in the user interface for
 compatibility; the test evaluates the complete visual acquisition path rather
 than only network latency. The Hub prepares the selected phone, opens a
-fullscreen timing target, refreshes Hub-to-phone clock samples, and uses
-scheduled phone-clock commands (`START_AT` / `STOP_AT`) when the current
+timing target on the left half of the screen, refreshes Hub-to-phone clock
+samples, and uses scheduled phone-clock commands (`START_AT` / `STOP_AT`) when the current
 time-sync samples are good enough. If scheduled timing is not usable, it falls
 back to immediate `START` / `STOP`. The test then transfers the video and writes
 JSON/CSV timing reports next to the transferred MP4.
@@ -358,8 +359,8 @@ command timing, phone-clock target fields, segment cut offsets from
 transport timing problems from camera-frame selection or visual target analysis
 issues.
 
-For reliable analysis, aim the phone at the right side of the fullscreen timing
-target and make sure the complete green border is visible in the recorded video.
+For reliable analysis, aim the phone at the timing target on the left half of the
+screen and make sure the complete green border is visible in the recorded video.
 If any side of the green border is cropped out, the analyzer may not be able to
 read the start/stop target cleanly.
 
