@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.0.11 - 2026-10-13
 
 - Keep searching for `adb.exe` while the Hub runs instead of giving up at
   startup, so USB phones connect without Wi-Fi once Android SDK

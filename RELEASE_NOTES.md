@@ -1,17 +1,17 @@
-# CaptureBridge Hub v1.0.10
-
-This release is the Hub version archived for the CaptureBridge SoftwareX
-submission.
+# CaptureBridge Hub v1.0.11
 
 Highlights:
 
-- update Pillow to 12.3.0, which contains the upstream fixes for advisories
-  reported against Pillow 12.2.0;
-- retain the audited and exactly pinned portable-release dependency set;
-- pin the matching Android release and document SHA-256 verification;
-- clarify the Android-only scope and visual boundary-timing terminology; and
-- retain the transfer hardening, trusted-network guidance, and validation-scope
-  documentation introduced in v1.0.9.
+- connect phones over USB without Wi-Fi: the Hub keeps looking for `adb.exe`
+  while it runs, finds it in more places, and re-creates USB reverse forwarding
+  after an adb server restart or a cable replug;
+- measure when each lag-test timecode reached the screen (Windows DWM vertical
+  blank) and report the endpoint lag against that screen time, after the
+  phone's boundary-frame offset, in milliseconds and frames;
+- remove the High-speed EV setting: above 60 fps the shutter is fixed at about
+  one frame period and CaptureBridge Android v1.0.16 matches the brightness of
+  the entered ISO and shutter automatically; and
+- start TCP control and USB even when the UDP discovery port cannot be opened.
 
-Install the matching CaptureBridge Android v1.0.15 APK. Use an authorized USB
+Install the matching CaptureBridge Android v1.0.16 APK. Use an authorized USB
 connection or an isolated, trusted private network.

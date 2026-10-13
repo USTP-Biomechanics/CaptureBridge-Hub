@@ -1,4 +1,4 @@
-# Exact dependency set used to build the v1.0.10 portable Windows release.
+# Exact dependency set used to build the v1.0.11 portable Windows release.
 # Keep requirements.txt as the supported source-install range.
 pyserial==3.5
 Pillow==12.3.0
