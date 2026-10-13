@@ -39,10 +39,11 @@ configuration. Future releases may change the protocol or installation
 instructions.
 
 Important connection note: the Hub can connect to Android phones over USB with
-ADB reverse port forwarding, or over the local Wi-Fi/LAN discovery path. Wi-Fi
-use usually needs the PC and phones on the same private network, Windows should
-use the Private network profile, and firewall exceptions are commonly required
-for TCP `6000`, UDP `6000`, and the phone streaming UDP port `6101`.
+ADB reverse port forwarding, which needs Android SDK Platform-Tools on the PC
+(see [USB And ADB](#usb-and-adb)), or over the local Wi-Fi/LAN discovery path.
+Wi-Fi use usually needs the PC and phones on the same private network, Windows
+should use the Private network profile, and firewall exceptions are commonly
+required for TCP `6000`, UDP `6000`, and the phone streaming UDP port `6101`.
 
 ## Quick Start
 
@@ -70,7 +71,8 @@ not require Python or internet access on the lab PC.
 5. Install the downloaded APK on the phone. If Android asks, allow installing
    this APK from the file manager or browser you are using.
 6. Connect the phone over USB with USB debugging enabled, or put the PC and
-   phone on the same private Wi-Fi or LAN.
+   phone on the same private Wi-Fi or LAN. USB also needs Android SDK
+   Platform-Tools on the PC; see [USB And ADB](#usb-and-adb).
 7. On the PC, double-click `Run_CaptureBridge_Hub.bat` in the extracted folder.
 8. Allow Windows firewall access on Private networks when prompted.
 9. Start the CaptureBridge Android app on the phone.
@@ -108,9 +110,14 @@ If setup reports that Python is missing, install Python 3 for Windows and run
 The red labels in the screenshot mark the main operator areas:
 
 - **A**: Global camera profile for shutter, resolution, FPS, and ISO. These
-  settings are synced to the connected phones before capture. A shorter shutter
-  can reduce motion blur but needs more light; higher ISO brightens the image
-  but can add noise. See [Configuration](#configuration) for saved defaults.
+  settings are synced to the connected phones before capture. A shorter
+  shutter can reduce motion blur but needs more light; higher ISO brightens the
+  image but can add noise. Above 60 fps, for example at 240 fps, the exposure
+  time is fixed at about one frame period (about 4 ms at 240 fps), so a shorter
+  shutter cannot reduce motion blur there; the phone keeps auto exposure and
+  matches the image brightness of the entered ISO and shutter automatically.
+  See [Configuration](#configuration) for saved defaults and high-speed
+  exposure.
 - **B**: Capture naming fields. The generated capture name is sent to all
   phones before recording. The fields, choices, order, and output formatting can
   be changed in [app_config.json](app_config.json).
@@ -152,7 +159,9 @@ the preview stream port, and Android tries USB before Wi-Fi discovery. If USB is
 not available, phones discover the PC automatically over UDP. If discovery or
 streaming does not work, check these first:
 
-- For USB: the phone is authorized for USB debugging and ADB is available.
+- For USB: the phone is authorized for USB debugging and Android SDK
+  Platform-Tools (`adb.exe`) is installed on the PC; see
+  [USB And ADB](#usb-and-adb).
 - For Wi-Fi: PC and phones are on the same Wi-Fi or LAN segment.
 - For Wi-Fi: Windows network profile is set to Private.
 - For Wi-Fi: inbound firewall rules allow TCP `6000`, UDP `6000`, and UDP `6101`.
@@ -173,6 +182,48 @@ netsh advfirewall firewall add rule name="CaptureBridge Hub UDP Discovery 6000" 
 netsh advfirewall firewall add rule name="CaptureBridge Hub TCP Control 6000" dir=in action=allow protocol=TCP localport=6000 profile=private
 netsh advfirewall firewall add rule name="CaptureBridge Hub Phone Stream UDP 6101" dir=in action=allow protocol=UDP localport=6101 profile=private
 ```
+
+### USB And ADB
+
+USB connections need Android SDK Platform-Tools (`adb.exe`) on the PC; the Hub
+does not include it. Use one of these:
+
+- Android Studio: `SDK Manager` > `SDK Tools` > `Android SDK Platform-Tools`
+- `winget install Google.PlatformTools`
+- extract the [Platform-Tools ZIP](https://developer.android.com/tools/releases/platform-tools)
+  so that its `platform-tools` folder sits next to `Run_CaptureBridge_Hub.bat`
+- set `phone_transport.adb_path` in [app_config.json](app_config.json) to
+  `adb.exe` or to the folder that contains it
+
+The Hub looks for `adb.exe` in this order: `phone_transport.adb_path`, a
+`platform-tools` folder next to `Run_CaptureBridge_Hub.bat`, `ANDROID_HOME` and
+`ANDROID_SDK_ROOT`, the Android Studio SDK (`%LOCALAPPDATA%\Android\Sdk`),
+`PATH`, the Visual Studio/Xamarin SDK
+(`%ProgramFiles(x86)%\Android\android-sdk`), and the SDK bundled with Unity Hub
+editors. A configured `adb_path` that runs is always used. Among the other
+copies it prefers adb 1.0.41 or newer, because an adb client with a different
+version restarts the running adb server and drops every USB connection.
+
+The USB state is shown next to the server address and in the log:
+
+- `ADB: searching for adb.exe...`: the search is running.
+- `USB unavailable: adb.exe not found - ...`: no usable `adb.exe` was found.
+  Wi-Fi keeps working, and the Hub searches again every 10 seconds, so a
+  Platform-Tools folder or Android Studio SDK installed while the Hub runs is
+  picked up without a restart. After `winget install`, restart the Hub, because
+  `PATH` changes reach only programs started afterwards.
+- `ADB: 1 ready, USB reverse 1/1`: one authorized phone, and the number of
+  ready phones whose control port `6000` is forwarded over USB.
+- `; authorize USB debugging on phone` or `; reconnect offline phone`: accept
+  the USB debugging prompt on the phone, or replug the cable.
+- `; reverse failed: tcp:<port>: <error>`: adb refused the forwarding; the log
+  names the phone.
+
+ADB drops reverse forwarding when the adb server restarts, for example after
+`adb kill-server` or when another tool runs a different adb version, and when
+the phone reconnects. The Hub checks the forwarding on every poll
+(`adb_poll_interval_sec`, 3 seconds by default) and re-creates lost entries
+within one poll; the log then shows `ADB reverse restored for ...`.
 
 ## Security And Data Handling
 
@@ -231,7 +282,8 @@ For a lab PC that should not need Python or internet access:
    [CaptureBridge Android v1.0.15 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.15)
    on the Android phone.
 3. Connect the Android phone by USB with USB debugging enabled, or put the PC
-   and phone on the same private Wi-Fi or LAN.
+   and phone on the same private Wi-Fi or LAN. USB also needs Android SDK
+   Platform-Tools on the PC; see [USB And ADB](#usb-and-adb).
 4. Double-click `Run_CaptureBridge_Hub.bat` inside the extracted folder.
 5. Allow Windows firewall access on Private networks if prompted.
 
@@ -280,7 +332,8 @@ submission compatibility.
 - UDP discovery plus TCP control on port `6000`
 - Shared live capture name with validation and automatic re-send until acknowledged
 - Global `START` and `STOP` broadcast
-- Shared camera settings for resolution, FPS, ISO, and shutter
+- Shared camera settings for resolution, FPS, ISO, shutter, and high-speed
+  exposure compensation
 - Start is guarded until connected phones report the shared camera profile
 - Selected-phone visual boundary-timing test for checking the first and last
   saved frames against a recorded timing target
@@ -308,7 +361,10 @@ The stream uses the phone control connection plus a separate preview channel:
 The app sends `LIVE_PREVIEW_START` with the PC host, stream port, FPS, JPEG
 quality, max dimension, transport protocol, and optional stream key. The phone
 sends preview frames only after that request. Unchecking the phone or closing
-the app sends `LIVE_PREVIEW_STOP`.
+the app sends `LIVE_PREVIEW_STOP`. In modes above 60 fps, CaptureBridge Android
+1.0.16 and newer keep the high-speed recording session running while streaming
+and send snapshots of its preview at the stream FPS, so the stream shows the
+real high-speed exposure and recording keeps working while it streams.
 
 Stream settings live under `phone_stream` in [app_config.json](app_config.json):
 
@@ -322,8 +378,13 @@ Stream settings live under `phone_stream` in [app_config.json](app_config.json):
 Transport settings live under `phone_transport` in [app_config.json](app_config.json):
 
 - `mode`: `adb_reverse_first` or `wifi_only`
-- `adb_path`: optional path to `adb.exe`
-- `adb_poll_interval_sec`
+- `adb_path`: optional path to `adb.exe` or to the folder that contains it.
+  Relative paths are resolved relative to the repo or package app folder; a
+  bare name such as `adb.exe` is also looked up on `PATH`. `~` and
+  `%VARIABLES%` are expanded. Leave it empty to use the search order in
+  [USB And ADB](#usb-and-adb).
+- `adb_poll_interval_sec`: how often USB phones and their forwarding are
+  checked, in seconds (1-60, default 3)
 
 ## Operator Workflow
 
@@ -357,12 +418,50 @@ those raw fields for tooling and logs the compact
 command timing, phone-clock target fields, segment cut offsets from
 `.segment.json`, and analyzer frame timing. Use those fields to separate
 transport timing problems from camera-frame selection or visual target analysis
-issues.
+issues. They also record the phone's camera settings in `camera_*` fields: mode
+(`camera_width`, `camera_height`, `camera_fps`, `camera_high_speed`), the
+requested `camera_iso` and `camera_shutter_seconds`, and above 60 fps the
+exposure compensation the phone applied (`camera_high_speed_ae_compensation_mode`,
+`camera_high_speed_ae_compensation_applied_ev`). A field is empty in the CSV and
+`null` in the JSON report when the phone app does not report it.
 
 For reliable analysis, aim the phone at the timing target on the left half of the
 screen and make sure the complete green border is visible in the recorded video.
 If any side of the green border is cropped out, the analyzer may not be able to
 read the start/stop target cleanly.
+
+The raw lag (`start_lag_ms`, `stop_lag_ms`) compares the decoded timecode with
+the moment the Hub computed it, so it includes the PC's screen pipeline: on
+Windows a windowed timing target reaches the screen a few refresh periods after
+it is drawn (about 12 ms at 240 Hz on the lab PC), which reads as an "early"
+camera. On Windows the Hub therefore also records, for every displayed
+timecode, the desktop compositor's (DWM) vertical blank at which it was scanned
+out. The report adds `screen_start_lag_ms` and `screen_stop_lag_ms`: the
+endpoint lag against the middle of the screen-time span during which the
+decoded timecode was shown, with `screen_*_half_width_ms` as the +/- half-width
+of that span (about one refresh period). `screen_*_residual_ms` also subtracts
+how far the phone's chosen boundary frame lies from the target
+(`chosen_start_offset_us`, `end_offset_error_us`), so frame snapping at 60 fps
+does not show up as lag. These values are measured in every run; no fixed
+correction is applied, and only directly decoded endpoints get them. Two
+delays are not included: the monitor's own processing, which Windows cannot
+see, and the phone sensor's rolling-shutter readout (rows are exposed one after
+another, so the marker rows can be exposed several milliseconds after the
+frame timestamp). The log line `Lag test vs screen time` shows the values;
+`screen_timing_source` is `unavailable` where DWM timing is not available, and
+the raw fields keep their previous meaning.
+
+Above 60 fps, for example at 240 fps, Android uses auto exposure and the
+exposure time stays at about one frame period (about 4 ms at 240 fps), so
+`camera_shutter_seconds` is not the exposure the sensor used. The phone instead
+sets the auto-exposure compensation so the image is as bright as the requested
+ISO and shutter would make it; a short requested shutter therefore lowers the
+sensor gain and noise. In the author's Samsung Galaxy S25 Ultra checks, a
+bright target background plus `-2.0` EV raised the share of 1080p240 lag tests
+whose endpoint frames the analyzer decoded directly, rather than inferring them
+from neighboring frames, from 60-67% to 80%; with a short requested shutter
+such as ISO `800` at `1/2000 s` the automatic value goes toward that `-2.0` EV
+limit in a dim room. See [Configuration](#configuration) for how it is applied.
 
 For compatible Android clients, `STOP_MARKED` is used as the stop timing
 acknowledgement because it is sent immediately after the phone marks the stop
@@ -462,18 +561,35 @@ Important settings:
 - `name_fields`: the ordered fields shown in the naming UI
 - `phone_stream`: live preview settings
 - `phone_transport`: USB/ADB reverse and Wi-Fi transport preference
-- `camera_defaults`: first-run camera defaults before a saved camera profile exists
+- `camera_defaults`: first-run camera defaults before a saved camera profile
+  exists: `preferred_width`, `preferred_height`, `iso`, and
+  `shutter_fps_multiplier`
 
 On first startup, the app prefers a shared `1920 x 1080` camera mode and selects
 the highest FPS available for that mode across the connected phones. It starts
-with ISO `800` and a shutter of `1 / (2 * fps)`, which is the standard
-180-degree shutter baseline. After camera settings are changed, the last profile
-is saved locally in `capturebridge_state.json` and reused on the next startup.
+with ISO `800`, a shutter of `1 / (2 * fps)`, which is the standard 180-degree
+shutter baseline. After camera settings are
+changed, the last profile is saved locally in `capturebridge_state.json` and
+reused on the next startup.
 
 For motion analysis, `1 / (2 * fps)` is a sensible starting point. If motion
 blur is still too visible and lighting allows it, try `1 / (4 * fps)` or faster.
 ISO `800` is a clean starting value in a well-lit lab; use `1600` or `2000` if
-the image is too dark at high FPS.
+the image is too dark at higher FPS. ISO and shutter apply only up to 60 fps.
+
+Modes above 60 fps, for example 240 fps, run in an Android constrained
+high-speed session. Android forces auto exposure there and the exposure time
+stays at about one frame period (about 4 ms at 240 fps on the tested Samsung
+Galaxy S25 Ultra), so **the shutter is fixed above 60 fps** and a shorter
+shutter setting cannot reduce motion blur in those modes. CaptureBridge Android
+1.0.16 and newer still honor the entered ISO and shutter as a brightness
+target: the phone measures the exposure time and gain that auto exposure
+chooses and sets the auto-exposure compensation so that exposure time x ISO
+matches shutter x ISO as requested, rounded to the phone's compensation step
+and clamped to its range (usually -2 to +2 EV). It adjusts only between
+recordings, never during one, and remembers the value per camera mode. Older
+phone apps keep plain auto exposure in these modes. See [Lag Test](#lag-test)
+for the effect on high-speed lag tests.
 
 Supported name field types:
 
@@ -643,6 +759,20 @@ Payload notes:
 - Phone capture folders may add timestamp suffixes to the generated name; the
   Hub treats those as matches for current-capture transfer status and `GET`.
 - Camera settings payloads should include `resolutions`, `current`, and optionally `position`.
+- `SETTINGS <json>` carries the full camera state: `width`, `height`, `iso`,
+  `shutterSeconds`, and optional `fps`. Above 60 fps, CaptureBridge Android
+  1.0.16 and newer match the brightness of `iso` x `shutterSeconds`
+  automatically. An optional `highSpeedAeCompensationEv` fixes the EV instead
+  (for tooling and tests; the Hub does not send it); a non-finite value or one
+  outside -10 to +10 is answered with `SETTINGS_ERR INVALID_VALUES`.
+- In `SETTINGS_OK` and `SETTINGS_LIST_OK`, `current` reports `width`, `height`,
+  `fps`, `highSpeed`, `iso`, and `shutterSeconds`. CaptureBridge Android 1.0.16
+  and newer add `highSpeedAeCompensationMode` (`auto` or `fixed`), the fixed
+  `highSpeedAeCompensationEv` when one was set, and
+  `highSpeedAeCompensationAppliedEv`, the EV the high-speed session uses (`null`
+  outside high-speed modes or without exposure compensation). The top-level
+  `aeCompensation` object gives `minEv`, `maxEv`, and `stepEv` for the current
+  camera, or is `null`.
 - Preview start payload includes `host`, `port`, `protocol`, `maxFps`,
   `jpegQuality`, `maxDimension`, and optionally `streamKey`.
 
@@ -651,6 +781,9 @@ Payload notes:
 ### Phones Do Not Appear
 
 - For USB, confirm USB debugging is enabled and authorized on the phone.
+- For USB, read the status next to the server address. `USB unavailable:
+  adb.exe not found` means Android SDK Platform-Tools is missing or not found;
+  see [USB And ADB](#usb-and-adb) for install options and the searched folders.
 - For Wi-Fi, confirm PC and phones are on the same private network.
 - For Wi-Fi, confirm UDP `6000` is allowed through the Windows firewall.
 - Check that the phone client is compatible with this protocol.

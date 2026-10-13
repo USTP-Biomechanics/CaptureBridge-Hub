@@ -7,6 +7,7 @@ import time
 import os
 import json
 import copy
+import math
 import queue
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
@@ -14,7 +15,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import serial
 import serial.tools.list_ports
 import android_adb
-from lag_test import LagTiming, LagTimingDisplay, analyze_lag_video, write_lag_report
+from lag_test import LagTiming, LagTimingDisplay, analyze_lag_video, screen_lag_ms, write_lag_report
 from phone_protocol import (
     ClientTimeSync,
     MAX_PROTOCOL_LINE_BYTES,
@@ -36,6 +37,14 @@ SERVER_PORT = 6000
 DISCOVERY_UDP_PORT = 6000
 DISCOVERY_REQUEST = "DISCOVER_UDPCAMERA"
 DISCOVERY_RESPONSE_PREFIX = "UDPCAMERA_OK"
+
+# USB transport (ADB reverse) settings
+ADB_REDISCOVERY_INTERVAL_SEC = 10.0
+ADB_MISSING_STATUS = (
+    "USB unavailable: adb.exe not found - install Android SDK Platform-Tools "
+    "or set phone_transport.adb_path"
+)
+
 ARDUINO_BAUD = 9600
 ARDUINO_PROBE_COMMAND = b"PING\n"
 ARDUINO_PROBE_RESPONSE = "CAPTUREBRIDGE_ARDUINO_BRIDGE"
@@ -424,10 +433,12 @@ def _format_client_line_for_log(line: str) -> str:
             }
             current = payload.get("current", {})
             current_text = _compact_resolution_text(current) if current else "unknown"
+            ev = current.get("highSpeedAeCompensationAppliedEv") if current else None
+            ev_text = f" ev={compact_float_text(ev)}" if ev is not None else ""
             position = payload.get("position")
             position_text = f" position={position}" if position else ""
             return (
-                f"{cmd} current={current_text} "
+                f"{cmd} current={current_text}{ev_text} "
                 f"modes={len(mode_keys)} options={len(resolutions)}{position_text}"
             )
         except Exception:
@@ -511,6 +522,7 @@ class HubLagTestSession:
     capture_name: Optional[str] = None
     capture_info: Optional[dict] = None
     segment_metrics: Optional[dict] = None
+    screen_timing: Optional[dict] = None
     poll_attempts: int = 0
     transfer_requested: bool = False
     transfer_lookup_started: bool = False
@@ -588,6 +600,58 @@ def _build_lag_test_command_timing(extra: dict, analysis) -> dict:
         "start_lag_ms": getattr(analysis, "start_lag_ms", None),
         "stop_lag_ms": getattr(analysis, "stop_lag_ms", None),
     }
+
+
+def _lag_test_camera_report_fields(settings_payload) -> dict:
+    current = settings_payload.get("current") if isinstance(settings_payload, dict) else None
+    if not isinstance(current, dict):
+        current = {}
+    return {
+        "camera_width": current.get("width"),
+        "camera_height": current.get("height"),
+        "camera_fps": current.get("fps"),
+        "camera_high_speed": current.get("highSpeed"),
+        "camera_iso": current.get("iso"),
+        "camera_shutter_seconds": current.get("shutterSeconds"),
+        "camera_high_speed_ae_compensation_mode": current.get("highSpeedAeCompensationMode"),
+        "camera_high_speed_ae_compensation_applied_ev": current.get("highSpeedAeCompensationAppliedEv"),
+    }
+
+
+def _lag_test_screen_timing(analysis, screen_timeline, display_started_perf, segment_metrics) -> dict:
+    """Endpoint lag against the time the decoded timecode was really on screen.
+
+    The raw lag compares a decoded timecode with its render time, so it includes the
+    PC's screen pipeline. Here each directly decoded endpoint is placed at the middle of
+    the screen-time span its timecode was displayed (from the display's DWM timeline).
+    The residual also subtracts how far the phone's chosen boundary frame sits from the
+    target, leaving what the frame selection cannot explain.
+    """
+    segment = segment_metrics if isinstance(segment_metrics, dict) else {}
+    timeline = list(screen_timeline or [])
+    fields = {
+        "screen_timing_source": "dwm_vblank" if timeline else "unavailable",
+        "screen_timeline_ticks": len(timeline),
+    }
+    sides = (
+        ("start", LAG_TEST_START_TARGET_MS, "first", "chosen_start_offset_us"),
+        ("stop", LAG_TEST_STOP_TARGET_MS, "last", "end_offset_error_us"),
+    )
+    for side, target_ms, endpoint, offset_key in sides:
+        lag_ms = half_width_ms = residual_ms = None
+        decoded_ms = getattr(analysis, f"{endpoint}_frame_elapsed_ms", None)
+        predicted = getattr(analysis, f"{endpoint}_frame_elapsed_predicted", True)
+        if timeline and decoded_ms is not None and predicted is False and display_started_perf:
+            found = screen_lag_ms(timeline, int(decoded_ms), display_started_perf * 1000.0 + target_ms)
+            if found is not None:
+                lag_ms, half_width_ms = (round(value, 3) for value in found)
+                offset_us = segment.get(offset_key)
+                if isinstance(offset_us, (int, float)):
+                    residual_ms = round(lag_ms - offset_us / 1000.0, 3)
+        fields[f"screen_{side}_lag_ms"] = lag_ms
+        fields[f"screen_{side}_half_width_ms"] = half_width_ms
+        fields[f"screen_{side}_residual_ms"] = residual_ms
+    return fields
 
 
 PHONE_STREAM_IMPORT_ERROR = ""
@@ -2110,10 +2174,13 @@ class App:
         self.adb_path = None
         self.adb_ready_serials = set()
         self.adb_reverse_serials = set()
+        self.adb_reverse_ports_by_serial = {}
         self.adb_status_text = "ADB not checked"
         self._adb_monitor_stop_event = threading.Event()
         self._adb_monitor_thread = None
         self._adb_last_log_state = None
+        self._adb_last_search_time = None
+        self._adb_reverse_errors_by_serial = {}
         self._last_client_membership_version = 0
 
         # Main 3-column layout: controls and logs on the left, shared settings in the
@@ -2185,6 +2252,8 @@ class App:
             info_frame,
             text=f"Server: {SERVER_HOST}:{SERVER_PORT}",
             anchor="w",
+            justify=tk.LEFT,
+            wraplength=300,
         )
         self.info_label.pack(side=tk.LEFT)
 
@@ -2369,11 +2438,14 @@ class App:
         self.shutter_entry.grid(row=3, column=1, sticky="ew", pady=2)
         self._register_tooltip(
             self.iso_label,
-            "Camera sensitivity. Higher ISO makes the image brighter but can add more noise. Enter a positive number, e.g. 2000.",
+            "Camera sensitivity. Higher ISO makes the image brighter but can add more noise. Enter a positive number, e.g. 2000.\n"
+            "Above 60 fps the phone keeps auto exposure and matches the brightness of this ISO and shutter automatically.",
         )
         self._register_tooltip(
             self.shutter_label,
-            "Exposure time. Faster shutter reduces motion blur but makes the image darker. Enter seconds like 0.004 or a fraction like 1/240.",
+            "Exposure time. Faster shutter reduces motion blur but makes the image darker. Enter seconds like 0.004 or a fraction like 1/240.\n"
+            "Above 60 fps (e.g. 240 fps) Android fixes the exposure time at about one frame (about 4 ms at 240 fps),\n"
+            "so a faster shutter cannot reduce motion blur there; it only sets the target brightness.",
         )
 
         self.refresh_camera_btn = tk.Button(
@@ -2988,7 +3060,7 @@ class App:
             return True
         try:
             self.root.after(0, lambda: callback(*args))
-        except tk.TclError:
+        except (tk.TclError, RuntimeError):
             pass
         return False
 
@@ -3791,7 +3863,7 @@ class App:
         else:
             try:
                 self.root.after(0, append)
-            except tk.TclError:
+            except (tk.TclError, RuntimeError):
                 pass
 
     # ------- client list updates -------
@@ -3909,22 +3981,21 @@ class App:
         if self._adb_monitor_thread and self._adb_monitor_thread.is_alive():
             return
 
-        configured_path = str(self.phone_transport_config.get("adb_path") or "")
-        self.adb_path = android_adb.find_adb_exe(configured_path)
-        if not self.adb_path:
-            self.adb_status_text = "ADB unavailable; Wi-Fi discovery only"
-            self.update_phone_connection_ui()
-            self.log("ADB not found; phones can still connect over Wi-Fi")
-            return
-
-        self._adb_monitor_stop_event.clear()
+        # The adb lookup can spawn several processes, so it runs on the monitor thread.
+        self.adb_status_text = "ADB: searching for adb.exe..."
+        self.update_phone_connection_ui()
+        self._adb_last_search_time = None
+        # A new event per start: a previous monitor still blocked in adb keeps its
+        # own event set and exits instead of running next to this one.
+        stop_event = threading.Event()
+        self._adb_monitor_stop_event = stop_event
         self._adb_monitor_thread = threading.Thread(
             target=self._adb_monitor_loop,
+            args=(stop_event,),
             name="capturebridge-adb-monitor",
             daemon=True,
         )
         self._adb_monitor_thread.start()
-        self.log(f"ADB monitor started: {self.adb_path}")
 
     def stop_adb_monitor(self):
         self._adb_monitor_stop_event.set()
@@ -3933,68 +4004,130 @@ class App:
         if thread and thread.is_alive():
             thread.join(timeout=2.0)
         self._remove_all_adb_reverses()
-        self.adb_ready_serials.clear()
+        self.adb_path = None
+        self.adb_ready_serials = set()
+        self._adb_reverse_errors_by_serial = {}
         self.adb_status_text = "ADB stopped"
         self.update_phone_connection_ui()
 
-    def _adb_monitor_loop(self):
+    def _adb_monitor_loop(self, stop_event: threading.Event):
         interval = int(self.phone_transport_config.get("adb_poll_interval_sec") or 3)
-        while not self._adb_monitor_stop_event.is_set():
-            self._refresh_adb_reverses()
-            self._adb_monitor_stop_event.wait(max(1, interval))
+        while not stop_event.is_set():
+            try:
+                self._refresh_adb_reverses(stop_event)
+            except Exception as exc:
+                self._set_adb_status(f"ADB monitor error: {exc}", stop_event)
+            stop_event.wait(max(1, interval))
 
-    def _refresh_adb_reverses(self):
-        adb_path = self.adb_path
+    def _resolve_adb_path(self) -> Optional[str]:
+        cached_path = self.adb_path
+        if cached_path and not android_adb.adb_executable_missing(cached_path):
+            return cached_path
+
+        now = time.monotonic()
+        if cached_path:
+            self.log(f"ADB executable disappeared: {cached_path}; searching again")
+        elif (
+            self._adb_last_search_time is not None
+            and now - self._adb_last_search_time < ADB_REDISCOVERY_INTERVAL_SEC
+        ):
+            return None
+        self._adb_last_search_time = now
+
+        configured_path = str(self.phone_transport_config.get("adb_path") or "")
+        adb_path = android_adb.find_adb_exe(configured_path, APP_ROOT)
+        self.adb_path = adb_path
+        if adb_path:
+            configured_paths = {
+                os.path.normcase(path)
+                for path in android_adb.configured_adb_paths(configured_path, APP_ROOT)
+            }
+            if configured_paths and os.path.normcase(adb_path) not in configured_paths:
+                self.log(f"Config phone_transport.adb_path is not usable: {configured_path}")
+            self.log(f"ADB found: {adb_path}")
+        return adb_path
+
+    def _refresh_adb_reverses(self, stop_event: Optional[threading.Event] = None):
+        adb_path = self._resolve_adb_path()
         if not adb_path:
+            self._set_adb_status(ADB_MISSING_STATUS, stop_event)
             return
 
         result = android_adb.list_devices(adb_path)
         if not result.ok:
-            self._set_adb_status(f"ADB device check failed: {result.error}")
+            if android_adb.adb_executable_missing(adb_path):
+                self.adb_path = None
+            self._set_adb_status(f"ADB device check failed: {result.error}", stop_event)
             return
 
         devices = android_adb.parse_devices(result.stdout)
         ready_devices = [device for device in devices if device.state == "device"]
-        ready_serials = {device.serial for device in ready_devices}
         unauthorized = [device for device in devices if device.state == "unauthorized"]
         offline = [device for device in devices if device.state == "offline"]
+        ports = [SERVER_PORT]
+        if self.phone_stream_enabled:
+            ports.append(int(getattr(self.phone_stream_config, "udp_port", 6101)))
 
-        for serial in sorted(self.adb_reverse_serials - ready_serials):
-            self._remove_adb_reverse(serial)
-
+        previous_ports_by_serial = self.adb_reverse_ports_by_serial
+        previous_errors_by_serial = self._adb_reverse_errors_by_serial
+        ports_by_serial = {}
+        errors_by_serial = {}
+        created_by_serial = {}
         for device in ready_devices:
-            if device.serial in self.adb_reverse_serials:
-                continue
-            label = android_adb.model_label(device)
-            reverse = android_adb.setup_reverse(adb_path, device.serial, SERVER_PORT, SERVER_PORT)
-            stream_reverse = None
-            if reverse.ok and self.phone_stream_enabled:
-                stream_port = int(getattr(self.phone_stream_config, "udp_port", 6101))
-                stream_reverse = android_adb.setup_reverse(adb_path, device.serial, stream_port, stream_port)
+            if stop_event is not None and stop_event.is_set():
+                break
+            sync = android_adb.ensure_reverses(adb_path, device.serial, ports)
+            created_by_serial[device.serial] = sync.created_ports
+            if stop_event is not None and stop_event.is_set():
+                break
 
-            if reverse.ok and (stream_reverse is None or stream_reverse.ok):
-                self.adb_reverse_serials.add(device.serial)
-                ports = [str(SERVER_PORT)]
-                if stream_reverse is not None:
-                    ports.append(str(int(getattr(self.phone_stream_config, "udp_port", 6101))))
-                self.log(f"ADB reverse ready for {label} ({device.serial}) on tcp:{', tcp:'.join(ports)}")
-            else:
-                error = reverse.error if not reverse.ok else stream_reverse.error
-                self.log(f"ADB reverse failed for {label} ({device.serial}): {error}")
+            label = f"{android_adb.model_label(device)} ({device.serial})"
+            previous_ports = previous_ports_by_serial.get(device.serial, set())
+            if previous_ports.intersection(sync.created_ports):
+                self.log(f"ADB reverse restored for {label} after adb restart/replug")
+            elif sync.active_ports - previous_ports:
+                active = ", ".join(f"tcp:{port}" for port in ports if port in sync.active_ports)
+                self.log(f"ADB reverse ready for {label} on {active}")
+            if sync.errors and sync.errors != previous_errors_by_serial.get(device.serial):
+                for port, error in sync.errors:
+                    self.log(f"ADB reverse failed for {label}: tcp:{port}: {error}")
+            ports_by_serial[device.serial] = set(sync.active_ports)
+            errors_by_serial[device.serial] = sync.errors
 
-        self.adb_ready_serials = ready_serials
+        if stop_event is not None and stop_event.is_set():
+            # stop_adb_monitor removes only the managed ports, and this poll's new
+            # ones are not managed yet; its join may also have timed out while this
+            # poll waited for the UI thread to take a log line.
+            for serial, created_ports in created_by_serial.items():
+                self._remove_adb_reverse(adb_path, serial, created_ports)
+            return
+
+        self.adb_reverse_ports_by_serial = ports_by_serial
+        self._adb_reverse_errors_by_serial = errors_by_serial
+        self.adb_reverse_serials = {
+            serial for serial, active_ports in ports_by_serial.items() if SERVER_PORT in active_ports
+        }
+        self.adb_ready_serials = {device.serial for device in ready_devices}
+
         status = f"ADB: {android_adb.device_summary(devices)}"
         if ready_devices:
-            status += f", reverse active {len(self.adb_reverse_serials)}"
+            status += f", USB reverse {len(self.adb_reverse_serials)}/{len(ready_devices)}"
         if unauthorized:
             status += "; authorize USB debugging on phone"
         if offline:
             status += "; reconnect offline phone"
-        self._set_adb_status(status)
+        failures = [failure for errors in errors_by_serial.values() for failure in errors]
+        if failures:
+            port, error = failures[0]
+            status += f"; reverse failed: tcp:{port}: {error}"
+        self._set_adb_status(status, stop_event)
 
-    def _set_adb_status(self, status: str):
+    def _set_adb_status(self, status: str, stop_event: Optional[threading.Event] = None):
+        if stop_event is None:
+            stop_event = self._adb_monitor_stop_event
+
         def apply_status():
-            if self._adb_monitor_stop_event.is_set():
+            if stop_event.is_set():
                 return
             self.adb_status_text = status
             if status != self._adb_last_log_state:
@@ -4004,21 +4137,17 @@ class App:
 
         self._call_on_ui_thread(apply_status)
 
-    def _remove_adb_reverse(self, serial: str):
-        adb_path = self.adb_path
-        if adb_path:
-            android_adb.remove_reverse(adb_path, serial, SERVER_PORT)
-            if self.phone_stream_enabled:
-                android_adb.remove_reverse(
-                    adb_path,
-                    serial,
-                    int(getattr(self.phone_stream_config, "udp_port", 6101)),
-                )
-        self.adb_reverse_serials.discard(serial)
+    def _remove_adb_reverse(self, adb_path: str, serial: str, ports):
+        for port in sorted(ports):
+            android_adb.remove_reverse(adb_path, serial, port)
 
     def _remove_all_adb_reverses(self):
-        for serial in list(self.adb_reverse_serials):
-            self._remove_adb_reverse(serial)
+        adb_path = self.adb_path
+        if adb_path:
+            for serial, ports in sorted(self.adb_reverse_ports_by_serial.items()):
+                self._remove_adb_reverse(adb_path, serial, ports)
+        self.adb_reverse_ports_by_serial = {}
+        self.adb_reverse_serials = set()
 
     def connect_phone_network(self, log_success=True) -> bool:
         if self.tcp is not None:
@@ -4027,8 +4156,6 @@ class App:
             self.start_adb_monitor()
             return True
 
-        tcp = None
-        discovery = None
         try:
             tcp = TcpServer(
                 host=SERVER_HOST,
@@ -4040,28 +4167,24 @@ class App:
                 transfer_progress_callback=self.on_transfer_progress,
                 save_dir_getter=self.get_save_dir,
             )
-            discovery = UdpDiscoveryResponder(
-                listen_port=DISCOVERY_UDP_PORT,
-                reply_tcp_port=SERVER_PORT,
-                log_callback=self.log,
-            )
         except Exception as exc:
-            try:
-                if tcp is not None:
-                    tcp.close()
-            except Exception:
-                pass
-            try:
-                if discovery is not None:
-                    discovery.close()
-            except Exception:
-                pass
             self.tcp = None
             self.discovery = None
             self.phone_connection_enabled = False
             self.update_phone_connection_ui(error_text=str(exc))
             self.log(f"Phone connection could not start: {exc}")
             return False
+
+        # USB phones only need the TCP server, so a busy discovery port is not fatal.
+        try:
+            discovery = UdpDiscoveryResponder(
+                listen_port=DISCOVERY_UDP_PORT,
+                reply_tcp_port=SERVER_PORT,
+                log_callback=self.log,
+            )
+        except Exception as exc:
+            discovery = None
+            self.log(f"Wi-Fi discovery unavailable: {exc}")
 
         self.tcp = tcp
         self.discovery = discovery
@@ -4988,7 +5111,7 @@ class App:
         fps = float(profile.get("fps") or 0.0)
         if fps <= 0.0:
             fps = float(self.camera_defaults.get("fps") or 60.0)
-        return {
+        lag_profile = {
             "width": int(profile["width"]),
             "height": int(profile["height"]),
             "fps": fps,
@@ -5001,6 +5124,7 @@ class App:
                 )
             ),
         }
+        return lag_profile
 
     def _lag_test_prepare_camera_mode(self):
         session = self._lag_test_session
@@ -5439,9 +5563,19 @@ class App:
         lag_client = self._lag_test_client()
         client_transport = (lag_client or {}).get("transport")
         client_transport_details = (lag_client or {}).get("transport_details")
+        camera_report_fields = _lag_test_camera_report_fields(
+            self.camera_settings_by_client.get(session.client_key)
+        )
+        screen_timeline = list(getattr(session.display, "screen_timeline", None) or [])
 
         def worker():
             analysis = analyze_lag_video(video_path, timing)
+            session.screen_timing = _lag_test_screen_timing(
+                analysis,
+                screen_timeline,
+                session.display_started_perf,
+                session.segment_metrics,
+            )
             report_paths = {}
             try:
                 report_base = os.path.splitext(video_path)[0] + "_lag_report"
@@ -5469,6 +5603,8 @@ class App:
                     "stop_ok_elapsed_ms": session.stop_ok_elapsed_ms,
                     "ready_elapsed_ms": session.ready_elapsed_ms,
                     "segment": session.segment_metrics,
+                    **camera_report_fields,
+                    **session.screen_timing,
                 }
                 report_extra["command_timing"] = _build_lag_test_command_timing(report_extra, analysis)
                 report_paths = write_lag_report(
@@ -5507,6 +5643,25 @@ class App:
                 f"Last {analysis.last_frame_elapsed_ms} ms -> {analysis.stop_lag_ms:+.1f} ms | "
                 f"confidence {analysis.confidence:.2f}"
             )
+        screen = session.screen_timing or {}
+        start_residual = screen.get("screen_start_residual_ms")
+        stop_residual = screen.get("screen_stop_residual_ms")
+        if not analysis.error and (start_residual is not None or stop_residual is not None):
+            # Lead with the lag against measured screen time minus the phone's boundary-frame
+            # offset; the raw values also contain the PC's screen pipeline.
+            frame_ms = 1000.0 / analysis.fps if analysis.fps else None
+
+            def lag_text(value):
+                if value is None:
+                    return "n/a"
+                frames = f" ({value / frame_ms:+.2f} frames)" if frame_ms else ""
+                return f"{value:+.1f} ms{frames}"
+
+            status = (
+                f"Start {lag_text(start_residual)} | Stop {lag_text(stop_residual)} vs measured screen time | "
+                f"raw {analysis.start_lag_ms:+.1f} / {analysis.stop_lag_ms:+.1f} ms | "
+                f"confidence {analysis.confidence:.2f}"
+            )
         self._set_lag_test_status(status)
         command_timing = _build_lag_test_command_timing(
             {
@@ -5536,6 +5691,19 @@ class App:
             f"last_clean={analysis.last_frame_clean}, "
             f"fps={analysis.fps:.2f}, confidence={analysis.confidence:.2f}"
         )
+        if screen.get("screen_timing_source") == "unavailable":
+            self.log("Lag test screen timing: unavailable (no DWM timeline); only render-time lag reported")
+        else:
+            self.log(
+                "Lag test vs screen time: "
+                f"start {self._fmt_ms(screen.get('screen_start_lag_ms'))} "
+                f"(+/-{self._fmt_ms(screen.get('screen_start_half_width_ms'))}, "
+                f"after frame offset {self._fmt_ms(screen.get('screen_start_residual_ms'))}), "
+                f"stop {self._fmt_ms(screen.get('screen_stop_lag_ms'))} "
+                f"(+/-{self._fmt_ms(screen.get('screen_stop_half_width_ms'))}, "
+                f"after frame offset {self._fmt_ms(screen.get('screen_stop_residual_ms'))}), "
+                f"{screen.get('screen_timeline_ticks')} screen ticks"
+            )
         segment = session.segment_metrics or {}
         if segment:
             self.log(

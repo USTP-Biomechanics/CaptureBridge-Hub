@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+- Keep searching for `adb.exe` while the Hub runs instead of giving up at
+  startup, so USB phones connect without Wi-Fi once Android SDK
+  Platform-Tools is available. The status line now reads
+  `USB unavailable: adb.exe not found - ...` while it is missing.
+- Look for `adb.exe` in more places: a `platform-tools` folder next to the
+  launcher, the Visual Studio/Xamarin Android SDK, and Unity's bundled SDK.
+  `phone_transport.adb_path` may now name the folder that contains `adb.exe`.
+  Among the found copies, prefer adb 1.0.41 or newer so the Hub does not
+  restart a running adb server; a configured `adb_path` that runs is always
+  used.
+- Check USB reverse forwarding on every ADB poll and re-create it after an adb
+  server restart or a cable replug. Disconnect removes only the ports the Hub
+  manages.
+- Start TCP control and USB even when the UDP discovery port cannot be opened.
+- Read adb output as UTF-8 and ignore adb daemon start-up lines.
+- Ignore log and UI updates from background threads after the window closes.
+- Add the `phone_transport` block to the portable package configuration.
+- Document that the shutter is fixed above 60 fps (about one frame period); the
+  ISO and shutter tooltips say so. CaptureBridge Android 1.0.16 matches the
+  brightness of the entered ISO and shutter automatically in those modes.
+- Measure when each lag-test timecode actually reached the screen (DWM vertical
+  blank per displayed timecode, Windows only) and report the endpoint lag
+  against that screen time (`screen_start_lag_ms`, `screen_stop_lag_ms`, their
+  half-widths, and `screen_*_residual_ms` after the phone's chosen boundary
+  frame offset). The raw render-time lag fields are unchanged.
+- Write the phone's camera mode, requested ISO and shutter, and the automatic
+  high-speed exposure compensation it applied to lag-test reports as `camera_*`
+  fields.
+- Show the lag-test result against measured screen time, after the phone's
+  boundary-frame offset, in milliseconds and frames; the raw values follow it.
+
 ## v1.0.10 - 2026-07-30
 
 - Update the portable-release and source-install Pillow requirement to 12.3.0

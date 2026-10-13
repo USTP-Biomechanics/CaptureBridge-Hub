@@ -25,6 +25,20 @@ If phones do not appear or previews do not show frames, check that Windows uses
 the Private network profile and allows inbound TCP 6000, UDP 6000, and UDP
 6101.
 
+USB connection:
+  - USB needs Android SDK Platform-Tools (adb.exe) on the PC; this package does
+    not include it. Install it with Android Studio (SDK Manager), with
+    "winget install Google.PlatformTools", or extract the Platform-Tools ZIP
+    from https://developer.android.com/tools/releases/platform-tools so that
+    its platform-tools folder sits next to Run_CaptureBridge_Hub.bat. You can
+    also set phone_transport.adb_path in app\app_config.json to adb.exe or to
+    its folder.
+  - "USB unavailable: adb.exe not found" in the Hub means no adb.exe was found.
+    The Hub searches again every 10 seconds and Wi-Fi keeps working. Restart
+    the Hub after a winget install so it sees the new PATH.
+  - USB forwarding lost after an adb restart or cable replug is re-created
+    automatically within one poll (3 seconds by default).
+
 Security:
   - The current protocol is not authenticated or encrypted.
   - Do not expose these ports to the internet, guest Wi-Fi, or another
@@ -46,6 +60,7 @@ Included:
 Not included:
   - Android client APK, available from:
     https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/latest
+  - Android SDK Platform-Tools (adb.exe) for USB connections
   - Extra model runtime packages
 
 No app executable is generated. The launcher starts the bundled Python runtime

@@ -12,6 +12,7 @@ from .marker_timecode import (
     marker_matrix,
     prewarm_marker_matrices,
 )
+from .screen_timing import DwmScreenClock
 
 
 DEFAULT_REFRESH_HZ = 60.0
@@ -94,6 +95,9 @@ class LagTimingDisplay:
         self._last_phase = None
         self.refresh_hz = DEFAULT_REFRESH_HZ
         self.tick_interval_ms = 1000.0 / DEFAULT_REFRESH_HZ
+        self.screen_clock = DwmScreenClock()
+        # (marker ms, screen perf_counter ms) per tick; kept after close() for analysis.
+        self.screen_timeline = []
 
     def show(self):
         if self.window is not None:
@@ -134,6 +138,7 @@ class LagTimingDisplay:
         self.window = window
         self.canvas = canvas
         prewarm_marker_matrices(ARUCO_MAX_ID)
+        self.screen_timeline = []
         self.start_perf = time.perf_counter()
         self._draw_static()
         self._tick()
@@ -306,6 +311,13 @@ class LagTimingDisplay:
                 self.canvas.itemconfigure("phase", text=self._phase, fill=phase_color)
                 self._last_phase = self._phase
             self._after_id = self.window.after(self._next_tick_delay_ms(), self._tick)
+            if self.screen_clock.available:
+                # Schedule first: waiting for the compositor takes about one refresh, and the
+                # next tick should follow right after it rather than one refresh later.
+                self.canvas.update_idletasks()
+                screen_ms = self.screen_clock.present_time_ms()
+                if screen_ms is not None:
+                    self.screen_timeline.append((marker_id * MARKER_STEP_MS, screen_ms))
         except tk.TclError:
             self.close()
 
