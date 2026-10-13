@@ -23,7 +23,7 @@ marker-based or other laboratory reference system.
 
 CaptureBridge Hub is designed to work with the CaptureBridge Android phone
 client. For normal lab use, download the Android APK from the
-[CaptureBridge Android v1.0.16 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.16).
+[CaptureBridge Android v1.0.17 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.17).
 The phone app source lives in
 [USTP-Biomechanics/CaptureBridge-Android](https://github.com/USTP-Biomechanics/CaptureBridge-Android).
 
@@ -32,7 +32,7 @@ The phone app source lives in
 Use these two versions together:
 
 - [CaptureBridge Hub v1.0.11](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/tag/v1.0.11)
-- [CaptureBridge Android v1.0.16](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.16)
+- [CaptureBridge Android v1.0.17](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.17)
 
 The release pair archived for the CaptureBridge SoftwareX submission is
 [CaptureBridge Hub v1.0.10](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/tag/v1.0.10) with
@@ -52,7 +52,7 @@ required for TCP `6000`, UDP `6000`, and the phone streaming UDP port `6101`.
 For normal use, download the portable release ZIP from the
 [CaptureBridge Hub v1.0.11 release](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/tag/v1.0.11),
 extract it, download and install the Android APK from the
-[CaptureBridge Android v1.0.16 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.16),
+[CaptureBridge Android v1.0.17 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.17),
 and start the Windows app with the BAT file. That is the easiest path and does
 not require Python or internet access on the lab PC.
 
@@ -68,7 +68,7 @@ not require Python or internet access on the lab PC.
 
 3. Extract the ZIP to a normal folder, for example `Documents` or `Desktop`.
 4. Download the Android APK from the
-   [CaptureBridge Android v1.0.16 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.16)
+   [CaptureBridge Android v1.0.17 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.17)
    and copy it to the phone if needed.
 5. Install the downloaded APK on the phone. If Android asks, allow installing
    this APK from the file manager or browser you are using.
@@ -85,7 +85,7 @@ not require Python or internet access on the lab PC.
 
 The portable Hub release includes the Windows app, its Python runtime, and the
 Arduino/Vicon bridge files. The Android APK is published separately in the
-[CaptureBridge Android v1.0.16 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.16).
+[CaptureBridge Android v1.0.17 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.17).
 No separate Python install is needed.
 
 ### Repo Run For Development
@@ -281,7 +281,7 @@ For a lab PC that should not need Python or internet access:
 1. Download and extract `CaptureBridge_Hub_Minimal_Offline.zip` from the
    [CaptureBridge Hub v1.0.11 release](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/tag/v1.0.11).
 2. Install the Android APK from the
-   [CaptureBridge Android v1.0.16 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.16)
+   [CaptureBridge Android v1.0.17 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.17)
    on the Android phone.
 3. Connect the Android phone by USB with USB debugging enabled, or put the PC
    and phone on the same private Wi-Fi or LAN. USB also needs Android SDK
@@ -291,7 +291,7 @@ For a lab PC that should not need Python or internet access:
 
 The offline package includes the app, portable CPython with Tkinter, `pyserial`,
 `Pillow`, and the Arduino bridge files. The Android client APK is published in
-the [CaptureBridge Android v1.0.16 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.16).
+the [CaptureBridge Android v1.0.17 release](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.17).
 
 ### Normal Repo Run
 
