@@ -1,0 +1,82 @@
+{
+  "attempt_id": "c_fhd60_usb_043",
+  "block_id": "c_p05_fhd60_usb",
+  "condition": "1080p60 USB",
+  "crop_px_left_top_right_bottom": [
+    132,
+    302,
+    898,
+    962
+  ],
+  "crop_size_px": [
+    766,
+    660
+  ],
+  "photo_size_mm": [
+    50.0,
+    43.08093994778068
+  ],
+  "time_axis_ms": [
+    -26.0,
+    17.0
+  ],
+  "decoded_code_ms": 980,
+  "requested_start_display_clock_ms": 1000.0,
+  "raw_lag_ms": -20.0,
+  "display_interval_ms": [
+    -3.069,
+    5.273000000000001
+  ],
+  "screen_half_interval_ms": 4.171,
+  "refreshes_shown": 2,
+  "refresh_period_ms": 4.171,
+  "refresh_period_nominal_ms": 4.166666666666667,
+  "screen_time_ms": 1.102,
+  "boundary_error_ms": 1.102,
+  "phone_frame_offset_ms": -1.866,
+  "residual_ms": 2.968,
+  "residual_frames": 0.17808,
+  "other_candidate_frame_ms": 14.793,
+  "camera_frame_interval_ms": 16.659,
+  "camera_frames_drawn_ms": [
+    -18.525,
+    -1.866,
+    14.793
+  ],
+  "refresh_ticks_drawn_ms": [
+    -23.924,
+    -19.753,
+    -15.582,
+    -11.411000000000001,
+    -7.24,
+    -3.069,
+    1.1020000000000003,
+    5.273000000000001,
+    9.444000000000003,
+    13.615000000000002
+  ],
+  "screen_time_minus_encoded_time_ms": 21.102,
+  "rolling_buffer_ms": 1000,
+  "start_command_received_before_target_ms": 563.3407629877329,
+  "clock_offset_error_ms": 0.1107130050659179,
+  "clock_corrected_residual_ms": 2.857286994934082,
+  "context_1080p60_usb_start_residual": {
+    "n": 100,
+    "median": 1.313,
+    "q1": -0.61125,
+    "q3": 4.05575,
+    "abs_p95": 7.581249999999999,
+    "min": -2.835,
+    "max": 9.971,
+    "median_frames": 0.07877999999999999,
+    "within_half_frame": 0.96,
+    "within_one_frame": 1.0
+  },
+  "context_1080p60_usb_start_raw_lag_median_ms": -20.0,
+  "context_1080p60_usb_start_screen_minus_encoded_median_ms": 21.253500000000003,
+  "attempt_share_at_or_below_in_condition": {
+    "residual": 0.67,
+    "boundary_error": 0.52,
+    "screen_minus_encoded": 0.47
+  }
+}

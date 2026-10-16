@@ -19,6 +19,19 @@ private network carries control, status, preview, and operator-requested file
 transfers. An optional Arduino serial bridge exchanges start/stop events with a
 marker-based or other laboratory reference system.
 
+## System Overview
+
+![CaptureBridge system and research workflow](docs/images/capturebridge-overview.png)
+
+(A) The Windows Hub controls the Android recording clients over USB/ADB or a
+private Wi-Fi network and receives videos together with acquisition metadata.
+The optional Arduino bridge exchanges start and stop events with a laboratory
+reference system. (B) Recordings are prepared and analyzed in external
+software. Those are intended uses, not validated integrations shipped with
+CaptureBridge.
+
+This is the same overview figure used in the CaptureBridge SoftwareX manuscript.
+
 ## Companion Android App
 
 CaptureBridge Hub is designed to work with the CaptureBridge Android phone
@@ -34,11 +47,9 @@ Use these two versions together:
 - [CaptureBridge Hub v1.0.11](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/tag/v1.0.11)
 - [CaptureBridge Android v1.0.17](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.17)
 
-The release pair archived for the CaptureBridge SoftwareX submission is
-[CaptureBridge Hub v1.0.10](https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/tag/v1.0.10) with
-[CaptureBridge Android v1.0.15](https://github.com/USTP-Biomechanics/CaptureBridge-Android/releases/tag/v1.0.15); use that pair when
-reproducing the submitted software configuration. Future releases may change
-the protocol or installation instructions.
+This is also the release pair described in the CaptureBridge SoftwareX
+manuscript; use it when reproducing that software configuration. Future
+releases may change the protocol or installation instructions.
 
 Important connection note: the Hub can connect to Android phones over USB with
 ADB reverse port forwarding, which needs Android SDK Platform-Tools on the PC
@@ -109,7 +120,8 @@ If setup reports that Python is missing, install Python 3 for Windows and run
 
 ![Annotated CaptureBridge Hub main window](docs/images/hub-main-window.png)
 
-The red labels in the screenshot mark the main operator areas:
+The phone's network address and device identifier are masked in the
+screenshot. The red labels mark the main operator areas:
 
 - **A**: Global camera profile for shutter, resolution, FPS, and ISO. These
   settings are synced to the connected phones before capture. A shorter
@@ -474,13 +486,18 @@ After `STOP_OK`, the Hub waits briefly for `READY` or `READY_ERR` so that
 preview rearm status is visible, then continues with transfer lookup even if no
 ready message arrives.
 
-In an illustrative Samsung Galaxy S25 Ultra bench check against a 144 Hz
-display, both endpoints were observed within 0--2 captured frames at 240 fps
-(0--8.33 ms) and 0--1 frame at 60 fps (0--16.67 ms). The display refresh period
-was 6.94 ms. This is a setup-specific, author-reported frame-scale observation,
-not traceable timing metrology or a phone-to-phone synchronization guarantee.
-The exact scope, conversion, limitations, and reproduction steps are published
-under [validation/](validation/).
+Repeated single-phone measurements with screen timing on a 240 Hz display are
+published under [validation/](validation/). For the first 100 directly decoded
+endpoints per camera mode, transport, and endpoint, the median residual (screen
+time minus the boundary frame's timestamp) at 60 fps was +0.9 to +1.5 ms over
+USB, with 96-100% of endpoints within half a frame, and +5.5 to +10.8 ms over
+Wi-Fi. Over Wi-Fi, the residuals are limited by the clock-sync error from
+asymmetric transmission delays; with that error removed afterwards, the medians
+are similar to those over USB. At 1080p240 over
+USB, the median was -2.0 ms at start and -5.9 ms (-1.40 frames) at stop. These
+results describe one phone and one display; they do not establish alignment
+between phones or with a laboratory reference system. The directory also lists the endpoint selection
+rule, the full per-condition table, and reproduction steps.
 
 ## User Interface
 
@@ -584,8 +601,8 @@ high-speed session. Android forces auto exposure there and the exposure time
 stays at about one frame period (about 4 ms at 240 fps on the tested Samsung
 Galaxy S25 Ultra), so **the shutter is fixed above 60 fps** and a shorter
 shutter setting cannot reduce motion blur in those modes. CaptureBridge Android
-1.0.16 and newer still honor the entered ISO and shutter as a brightness
-target: the phone measures the exposure time and gain that auto exposure
+1.0.17 and newer still honor the entered ISO and shutter as a brightness
+target (1.0.16 introduced this, but its compensation never adjusted): the phone measures the exposure time and gain that auto exposure
 chooses and sets the auto-exposure compensation so that exposure time x ISO
 matches shutter x ISO as requested, rounded to the phone's compensation step
 and clamped to its range (usually -2 to +2 EV). It adjusts only between
@@ -763,7 +780,7 @@ Payload notes:
 - Camera settings payloads should include `resolutions`, `current`, and optionally `position`.
 - `SETTINGS <json>` carries the full camera state: `width`, `height`, `iso`,
   `shutterSeconds`, and optional `fps`. Above 60 fps, CaptureBridge Android
-  1.0.16 and newer match the brightness of `iso` x `shutterSeconds`
+  1.0.17 and newer match the brightness of `iso` x `shutterSeconds`
   automatically. An optional `highSpeedAeCompensationEv` fixes the EV instead
   (for tooling and tests; the Hub does not send it); a non-finite value or one
   outside -10 to +10 is answered with `SETTINGS_ERR INVALID_VALUES`.
