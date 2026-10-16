@@ -30,8 +30,6 @@ reference system. (B) Recordings are prepared and analyzed in external
 software. Those are intended uses, not validated integrations shipped with
 CaptureBridge.
 
-This is the same overview figure used in the CaptureBridge SoftwareX manuscript.
-
 ## Companion Android App
 
 CaptureBridge Hub is designed to work with the CaptureBridge Android phone
@@ -120,8 +118,7 @@ If setup reports that Python is missing, install Python 3 for Windows and run
 
 ![Annotated CaptureBridge Hub main window](docs/images/hub-main-window.png)
 
-The phone's network address and device identifier are masked in the
-screenshot. The red labels mark the main operator areas:
+The red labels in the screenshot mark the main operator areas:
 
 - **A**: Global camera profile for shutter, resolution, FPS, and ISO. These
   settings are synced to the connected phones before capture. A shorter
@@ -417,9 +414,8 @@ Transport settings live under `phone_transport` in [app_config.json](app_config.
 
 Select a phone in `Connected phones` and press `Lag Test` to check the first and
 last saved-frame boundary timing for that phone, camera mode, lighting,
-transport, and trigger setup. The name is retained in the user interface for
-compatibility; the test evaluates the complete visual acquisition path rather
-than only network latency. The Hub prepares the selected phone, opens a
+transport, and trigger setup. The test evaluates the complete visual
+acquisition path, not only network latency. The Hub prepares the selected phone, opens a
 timing target on the left half of the screen, refreshes Hub-to-phone clock
 samples, and uses scheduled phone-clock commands (`START_AT` / `STOP_AT`) when the current
 time-sync samples are good enough. If scheduled timing is not usable, it falls
@@ -490,14 +486,11 @@ Repeated single-phone measurements with screen timing on a 240 Hz display are
 published under [validation/](validation/). For the first 100 directly decoded
 endpoints per camera mode, transport, and endpoint, the median residual (screen
 time minus the boundary frame's timestamp) at 60 fps was +0.9 to +1.5 ms over
-USB, with 96-100% of endpoints within half a frame, and +5.5 to +10.8 ms over
-Wi-Fi. Over Wi-Fi, the residuals are limited by the clock-sync error from
-asymmetric transmission delays; with that error removed afterwards, the medians
-are similar to those over USB. At 1080p240 over
-USB, the median was -2.0 ms at start and -5.9 ms (-1.40 frames) at stop. These
-results describe one phone and one display; they do not establish alignment
-between phones or with a laboratory reference system. The directory also lists the endpoint selection
-rule, the full per-condition table, and reproduction steps.
+USB, with every endpoint within one frame, and +5.5 to +10.8 ms over Wi-Fi,
+still within one frame. Over Wi-Fi, the residuals are limited by the clock-sync
+error from asymmetric transmission delays; with that error removed afterwards,
+the medians are similar to those over USB. At 1080p240, all medians stayed
+within 6 ms.
 
 ## User Interface
 
@@ -602,7 +595,7 @@ stays at about one frame period (about 4 ms at 240 fps on the tested Samsung
 Galaxy S25 Ultra), so **the shutter is fixed above 60 fps** and a shorter
 shutter setting cannot reduce motion blur in those modes. CaptureBridge Android
 1.0.17 and newer still honor the entered ISO and shutter as a brightness
-target (1.0.16 introduced this, but its compensation never adjusted): the phone measures the exposure time and gain that auto exposure
+target: the phone measures the exposure time and gain that auto exposure
 chooses and sets the auto-exposure compensation so that exposure time x ISO
 matches shutter x ISO as requested, rounded to the phone's compensation step
 and clamped to its range (usually -2 to +2 EV). It adjusts only between

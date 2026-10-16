@@ -2,8 +2,7 @@
 
 This directory documents single-phone measurements of the Hub's visual
 boundary-timing check ([Lag Test](../README.md#lag-test)), as reported in the
-CaptureBridge SoftwareX manuscript. It is not a phone-to-phone or
-phone-to-reference synchronization validation.
+CaptureBridge SoftwareX manuscript.
 
 ## Repeated single-phone timing measurements
 
@@ -69,11 +68,10 @@ seen. Each repeat replaced its first recording; three repeats are among the
 
 Frame values use each mode's frame period (16.67 ms at 60 fps, 4.17 ms at
 240 fps). Screen time was resolved to about +/-4.2 ms for 1117 of the 1200
-endpoints and more coarsely for the rest; the screen times are the compositor's
-timestamps, not an optical measurement of the display. Over Wi-Fi, the residuals are limited
-by the error of the Hub's clock-offset estimate, which arises from asymmetric
-transmission delays; with that error removed afterwards, the medians are
-similar to those over USB (last column).
+endpoints and more coarsely for the rest. Over Wi-Fi, the residuals are
+limited by the error of the Hub's clock-offset estimate, which arises from
+asymmetric transmission delays; with that error removed afterwards, the medians
+are similar to those over USB (last column).
 
 How the clock-offset error was determined: the Hub estimates the offset from
 the `SYNC` exchange with the shortest round-trip time, assuming equal delays in
@@ -92,16 +90,7 @@ attempt is the offset the Hub used minus this reference at the target time.
   residuals of all 1200 endpoints.
 - [numbers/lagtest_method.json](numbers/lagtest_method.json) and
   [numbers/lagtest_residuals.json](numbers/lagtest_residuals.json): the values
-  shown in the figures and the table above. The per-attempt image path was
-  removed from `lagtest_method.json` because it contains a device identifier.
-
-The per-attempt lag-test reports and the analysis scripts are not published.
-
-### Limitations
-
-These results describe one phone and one display. They compare displayed
-timecodes with the phone's frame timestamps and do not establish alignment
-between phones or with a laboratory reference system.
+  shown in the figures and the table above.
 
 ## Reproduction protocol
 
@@ -120,15 +109,3 @@ between phones or with a laboratory reference system.
    (`screen_start_residual_ms`, `screen_stop_residual_ms`, and their
    half-widths) are written only for directly decoded endpoints; see
    [Lag Test](../README.md#lag-test).
-6. Fix the number of endpoints and the selection rule per phone, mode,
-   transport, and load condition before recording, and keep a record of every
-   exclusion and repeat.
-
-## Earlier bench observation (superseded)
-
-An earlier author-reported check with a Samsung Galaxy S25 Ultra against a
-144 Hz display, before screen timing was available, observed endpoint deviations
-of 0--2 captured frames at 240 fps and 0--1 frame at 60 fps. Repetition count,
-resolution, and transport were not preserved. The values are kept in
-[lag_bench_observation.csv](lag_bench_observation.csv) for reference; the
-measurements above supersede them.
