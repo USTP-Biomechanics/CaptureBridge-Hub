@@ -5,11 +5,11 @@ authors:
   - family-names: "Simonlehner"
     given-names: "Mark"
 year: 2026
-version: "1.0.11"
-date-released: 2026-10-13
+version: "1.0.12"
+date-released: 2026-10-21
 license: MIT
 repository-code: "https://github.com/USTP-Biomechanics/CaptureBridge-Hub"
-url: "https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/tag/v1.0.11"
+url: "https://github.com/USTP-Biomechanics/CaptureBridge-Hub/releases/tag/v1.0.12"
 abstract: "Open-source Windows controller for coordinated CaptureBridge Android video acquisition over authorized USB/ADB connections or a trusted private network, with shared session metadata, live preview, structured file transfer, visual boundary-timing diagnostics, and optional Arduino triggering of a laboratory reference system."
 keywords:
   - biomechanics

@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.12 - 2026-10-21
+
+- Update the portable-release and source-install Pillow requirement to 13.0.0,
+  which contains the upstream fixes for the advisories reported against Pillow
+  12.3.0 on 2026-10-20. Pillow 13 requires Python 3.11 or newer.
+- No changes to the Hub source code; the protocol and the lag-test analysis are
+  unchanged from v1.0.11.
+
 ## v1.0.11 - 2026-10-13
 
 - Keep searching for `adb.exe` while the Hub runs instead of giving up at
